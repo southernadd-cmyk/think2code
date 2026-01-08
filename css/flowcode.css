@@ -29,6 +29,11 @@
     background: #92eda1; /* Matches the sidebar bg */
 }    
 
+.no-select {
+  user-select: none;          /* Standard */
+  -webkit-user-select: none;  /* Safari */
+  -ms-user-select: none;      /* Old Edge / IE */
+}
 
 /* WELCOME SCREEN STYLES */
 .welcome-overlay {
@@ -826,6 +831,7 @@ z-index: 2;                     /* sit above shape borders/fills */
 .modal-open {
     overflow: scroll;
 }
+
 
 
 
