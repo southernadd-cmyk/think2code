@@ -4,21 +4,6 @@ Build **real, executable flowcharts** in the browser — then automatically gene
 
 think2code is designed for teaching programming and algorithmic thinking at KS3/KS4/college level. Students drag blocks, connect them, run the program, and instantly see corresponding Python.
 ---
-Major update highlights:
-
-- ✅ Challenges system added (30 scaffolded programming problems)
-- ✅ Ellipsis text truncation on nodes
-- ✅ Full text in tooltip on nodes when text is truncated
-- ✅ Improved zoom & pan controls
-- ✅ Massive compiler upgrades:
-  - implicit forever loop support
-  - **ongoing loop detection improvements**
-- ✅ Export options modal
-  - PNG image
-  - JSON diagram
-  - Python `.py` file
-
----
 
 ## 🚀 Live features
 
