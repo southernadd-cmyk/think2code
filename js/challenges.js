@@ -301,12 +301,29 @@ const FLOWCODE_CHALLENGES = [
 
 let ACTIVE_CHALLENGE = null;
 let CHALLENGE_COMPLETED = new Set();
-
+function markdownToHtml(text) {
+    return text
+        // Bold **text**
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        // Inline code `text`
+        .replace(/`(.*?)`/g, '<code class="inline-code">$1</code>')
+        // Code blocks ```
+        .replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>')
+        // Definition lists: :Term → <dl><dt>Term</dt><dd>...</dd>
+        .replace(/^:([^\n]+)\n((?:.*\n?)*?)(?=\n*:|\n\n|$)/gm, '<dl><dt>$1</dt><dd>$2</dd></dl>')
+        // Paragraphs and line breaks
+        .replace(/\n\n/g, '</p><p>')
+        .replace(/\n/g, '<br>')
+        // Wrap in paragraph if needed
+        .replace(/^(.+)$/, '<p>$1</p>')
+        .replace(/<p><\/p>/g, '');
+}
+    
 function loadChallenge(ch) {
     document.getElementById("challenge-title").textContent = ch.title;
     document.getElementById("challenge-diff").textContent = "Difficulty " + ch.diff;
-    document.getElementById("challenge-task").textContent = ch.task;
-    document.getElementById("challenge-detail").innerHTML = ch.detail;
+    document.getElementById("challenge-task").innerHTML = markdownToHtml(ch.task);
+    document.getElementById("challenge-detail").textContent = ch.detail;
     document.getElementById("challenge-success").textContent = "Success Criteria: " + ch.success;
     document.getElementById("challenge-code").textContent = ch.pseudocode; // ✅ Fixed
     document.getElementById("challenge-skills").textContent = "Skills: " + ch.skills.join(", ");
@@ -430,6 +447,7 @@ document.getElementById("btn-challenges").addEventListener("click", () => {
     });
 
 });
+
 
 
 
