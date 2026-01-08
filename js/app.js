@@ -235,7 +235,23 @@ maxScale: 2.5,
 cancelExecution: false,
 skulptTask: null,
 skModule: null,
+terminateByUser(reason = "PROGRAM TERMINATED BY USER") {
+    this.cancelExecution = true;
 
+    if (this.skulptTask && this.skulptTask.cancel) {
+        try { this.skulptTask.cancel(); } catch (_) {}
+    }
+
+    this.isRunning = false;
+
+    // UI reset
+    document.querySelectorAll('.node').forEach(n => n.classList.remove('running'));
+    document.getElementById('run-btn').style.display = "inline-block";
+    document.getElementById('stop-btn').style.display = "none";
+
+    this.log(`\n>>> ${reason}`);
+}
+,
 screenFromWorld(x, y) {
     return {
         x: x * this.viewportScale + this.viewportX,
@@ -539,25 +555,15 @@ div.innerHTML = hasVars ? html : "<em>No variables set</em>";
 
 stopSim() {
     if (!this.isRunning) return;
-
-    this.cancelExecution = true;
-
-    // abort Skulpt task if exists
-    if (this.skulptTask && this.skulptTask.cancel) {
-        try { this.skulptTask.cancel(); } catch (_) {}
-    }
-
-    this.isRunning = false;
-
-    // UI reset
-    document.querySelectorAll('.node').forEach(n => n.classList.remove('running'));
-    document.getElementById('run-btn').style.display = "inline-block";
-    document.getElementById('stop-btn').style.display = "none";
-
-    this.log("\n>>> Stopped.");
+    this.terminateByUser();
 }
+
 ,
 async loadExampleFromFile(filename) {
+    if (this.isRunning) {
+        this.terminateByUser("PROGRAM TERMINATED BY USER");
+    }
+    
     try {
         const res = await fetch(`flows/${filename}`);
         if (!res.ok) {
@@ -574,6 +580,10 @@ async loadExampleFromFile(filename) {
     }
 },
 loadDiagramObject(diagram) {
+    if (this.isRunning) {
+        this.terminateByUser("PROGRAM TERMINATED BY USER");
+    }
+    
     if (!diagram.nodes || !Array.isArray(diagram.nodes)) {
         alert("Invalid diagram file (missing nodes)");
         return;
@@ -1010,7 +1020,15 @@ try {
     );
     await this.skulptTask;
 } catch (e) {
-
+    // 🛑 USER CANCEL — swallow EVERYTHING
+    if (
+        this.cancelExecution ||
+        e?.__flowcode_cancel__ ||
+        e?.nativeError?.__flowcode_cancel__ ||
+        e?.args?.v?.__flowcode_cancel__
+    ) {
+        return;
+    }
     let pyLine = null;
 
     if (e.traceback && e.traceback.length > 0) {
@@ -1518,6 +1536,10 @@ addDot(parent, cls, portType) {
     },
 
     loadDiagram() {
+        if (this.isRunning) {
+            this.terminateByUser("PROGRAM TERMINATED BY USER");
+        }
+        
         const input = document.createElement('input');
         input.type = 'file';
         input.accept = '.json';
