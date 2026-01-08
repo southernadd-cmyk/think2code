@@ -11,7 +11,7 @@
     --color-input-output: #0ea5e9; /* Sky 500 */
     --color-variable: #8b5cf6;     /* Violet 500 */
     --color-list: #ec4899;         /* Pink 500 */
-    
+    --bs-secondary-color: #FFD43B!important;
     /* UI Accents */
 
     --border-subtle: #e2e8f0;
@@ -25,6 +25,20 @@
 
 
 }
+
+
+.brain-icon {
+    color: #FFD43B; /* Python yellow */
+    transform: scale(0.75);   
+  }
+  
+  .python-icon {
+    color: #3776AB; /* Python blue */
+    font-size: 0.85em;
+    transform: translateY(2px);
+  }
+
+  
 #palette::-webkit-scrollbar-track {
     background: #92eda1; /* Matches the sidebar bg */
 }    
