@@ -48,7 +48,7 @@ transition: opacity 0.4s ease, visibility 0.4s ease;
 .welcome-content {
 max-width: 900px;
 width: 100%;
-transform: translateY(28vh);
+padding-top:35vh;
 text-align: center;
 animation: fadeInSlide 0.6s ease-out;
 }
@@ -793,6 +793,7 @@ z-index: 2;                     /* sit above shape borders/fills */
     background: rgba(56, 189, 248, 0.2);
     color: #38bdf8;
 }
+
 
 
 
