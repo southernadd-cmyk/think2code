@@ -306,7 +306,7 @@ function loadChallenge(ch) {
     document.getElementById("challenge-title").textContent = ch.title;
     document.getElementById("challenge-diff").textContent = "Difficulty " + ch.diff;
     document.getElementById("challenge-task").textContent = ch.task;
-    document.getElementById("challenge-detail").textContent = ch.detail;
+    document.getElementById("challenge-detail").innerHTML = ch.detail;
     document.getElementById("challenge-success").textContent = "Success Criteria: " + ch.success;
     document.getElementById("challenge-code").textContent = ch.pseudocode; // ✅ Fixed
     document.getElementById("challenge-skills").textContent = "Skills: " + ch.skills.join(", ");
@@ -430,6 +430,7 @@ document.getElementById("btn-challenges").addEventListener("click", () => {
     });
 
 });
+
 
 
 
