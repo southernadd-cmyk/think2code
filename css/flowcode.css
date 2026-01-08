@@ -823,6 +823,9 @@ z-index: 2;                     /* sit above shape borders/fills */
   scrollbar-width: auto;
   scrollbar-color: #4B8BBE #FFD43B;
 }
+.modal-open {
+    overflow: scroll;
+}
 
 
 
