@@ -25,8 +25,9 @@
 
 
 }
-
-
+.dropdown-item{
+ cursor:grab;   
+}
 .brain-icon {
     color: #FFD43B; /* Python yellow */
     transform: scale(0.75);   
@@ -845,6 +846,7 @@ z-index: 2;                     /* sit above shape borders/fills */
 .modal-open {
     overflow: scroll;
 }
+
 
 
 
