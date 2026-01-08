@@ -1,8 +1,8 @@
-# FlowCode v3.6
+# think2code
 
 Build **real, executable flowcharts** in the browser — then automatically generate Python code and run it step-by-step.
 
-FlowCode is designed for teaching programming and algorithmic thinking at KS3/KS4/college level. Students drag blocks, connect them, run the program, and instantly see corresponding Python.
+think2code is designed for teaching programming and algorithmic thinking at KS3/KS4/college level. Students drag blocks, connect them, run the program, and instantly see corresponding Python.
 ---
 Major update highlights:
 
@@ -39,7 +39,7 @@ Major update highlights:
 - Execution speed slider
 
 ### 🔁 Control structures supported
-FlowCode currently supports:
+think2code currently supports:
 
 - sequence
 - selection (IF / ELIF / ELSE)
@@ -116,7 +116,7 @@ No backend required — works offline.
 
 ## 🧑‍🏫 Designed for classrooms
 
-FlowCode was built for teachers and learners:
+think2code was built for teachers and learners:
 
 - supports direct instruction or discovery learning
 - challenges mode encourages independent practice
@@ -177,7 +177,7 @@ MIT License. Free for schools, teachers and students.
 
 ---
 
-### ⭐ If you find FlowCode useful…
+### ⭐ If you find think2code useful…
 
 Please star the repo — it helps others find it!
 
