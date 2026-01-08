@@ -23,8 +23,8 @@
     {
       "id": "n3",
       "type": "var",
-      "x": 298,
-      "y": 71,
+      "x": 393,
+      "y": 127,
       "text": "app = \"FlowCode\"",
       "varName": "x",
       "prompt": "Enter value",
