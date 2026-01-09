@@ -41,7 +41,7 @@
 
   
 #palette::-webkit-scrollbar-track {
-    background: #92eda1; /* Matches the sidebar bg */
+    background: #ffd343; /* Matches the sidebar bg */
 }    
 
 .no-select {
@@ -860,3 +860,4 @@ z-index: 2;                     /* sit above shape borders/fills */
 .modal-open {
     overflow: scroll;
 }
+
