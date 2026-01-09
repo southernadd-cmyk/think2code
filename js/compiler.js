@@ -453,6 +453,12 @@ findBackEdgesAndLoops() {
             // Check if 'toId' dominates 'fromId'
             const fromDoms = this.dominators.get(fromId);
             if (fromDoms && fromDoms.has(toId)) {
+                // ✅ ADD: Don't mark non-decision nodes as loop headers
+                const toNode = this.nodes.find(n => n.id === toId);
+                if (toNode && toNode.type !== "decision") {
+                    continue; // Skip - only decision nodes can be loop headers
+                }
+                
                 // Back edge found: fromId → toId where toId dominates fromId
                 this.backEdges.push({from: fromId, to: toId, port: edge.port});
                 this.loopHeaders.add(toId);
