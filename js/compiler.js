@@ -610,8 +610,6 @@ isConvergencePoint(nodeId) {
      * Compile a node with context tracking
      */
     compileNode(nodeId, visitedInPath, contextStack, indentLevel, inLoopBody = false, inLoopHeader = false) {
-
-          
         if (!nodeId) return "";
     
         const node = this.nodes.find(n => n.id === nodeId);
@@ -654,17 +652,12 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         // ✅ NEW: ALLOW convergence points to be revisited
         // ============================================
         const isConvergencePoint = this.isConvergencePoint(nodeId);
-
-        // ❗ DO NOT skip decision nodes at convergence points
-        if (
-            isConvergencePoint &&
-            this.compiledConvergencePoints.has(nodeId) &&
-            node.type !== "decision"
-        ) {
+        
+        // For convergence points: if already fully compiled (including successors), skip entirely
+        if (isConvergencePoint && this.compiledConvergencePoints.has(nodeId)) {
             console.log(`Skipping already compiled convergence point: ${nodeId}`);
             return "";
         }
-        
         
         // If this convergence point should be skipped during elif chain compilation,
         // compile the node code but don't compile successors (they'll be compiled after the chain)
@@ -1272,7 +1265,6 @@ return this.compileIfElse(
 }
 }
 
-  
 // ============================================
 // 4) DEFAULT: regular if/else (NO suppression)
 // ============================================
@@ -2453,36 +2445,35 @@ findCommonConvergencePoint(decisionId, yesId, noId) {
 findAllEndPoints(startId, visited = new Set()) {
     if (!startId || visited.has(startId)) return [];
     visited.add(startId);
-
+    
     const node = this.nodes.find(n => n.id === startId);
     if (!node) return [];
-
+    
     // If this is a convergence point, it's an end point for branch compilation
     if (this.isConvergencePoint(startId)) {
         return [startId];
     }
-
-    // IMPORTANT: decisions usually have no "next", so handle decisions BEFORE nextId logic
-    if (node.type === 'decision') {
-        const yesId = this.getSuccessor(startId, 'yes');
-        const noId  = this.getSuccessor(startId, 'no');
-
-        const yesEnds = yesId ? this.findAllEndPoints(yesId, new Set([...visited])) : [];
-        const noEnds  = noId  ? this.findAllEndPoints(noId,  new Set([...visited])) : [];
-
-        return [...yesEnds, ...noEnds];
-    }
-
-    // Normal nodes: if node has no "next" connection, it's an end point
+    
+    // If node has no "next" connection, it's an end point
     const nextId = this.getSuccessor(startId, 'next');
     if (!nextId) {
         return [startId];
     }
-
+    
+    // For decisions, check both branches
+    if (node.type === 'decision') {
+        const yesId = this.getSuccessor(startId, 'yes');
+        const noId = this.getSuccessor(startId, 'no');
+        
+        const yesEnds = yesId ? this.findAllEndPoints(yesId, new Set([...visited])) : [];
+        const noEnds = noId ? this.findAllEndPoints(noId, new Set([...visited])) : [];
+        
+        return [...yesEnds, ...noEnds];
+    }
+    
     // Otherwise, continue
     return this.findAllEndPoints(nextId, visited);
 }
-
 
 /**
  * Compile a node until reaching a stop point (exclusive)
@@ -2526,7 +2517,7 @@ compileNodeUntil(startId, stopId, visitedInPath, contextStack, indentLevel, inLo
             const noId = this.getSuccessor(startId, 'no');
             
             if (yesId && noId) {
-                code += this.compileNode(node, yesId, noId, stopId, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
+                code += this.compileNodeUntilDecision(node, yesId, noId, stopId, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
             }
             break;
         default:
@@ -2595,10 +2586,6 @@ compileElifChainUntil(elifNode, convergencePoint, visitedInPath, contextStack, i
  * Compile if/else statement with support for elif
  */
 // In compileIfElse method:
-/**
- * Compile if/else statement with support for elif
- */
-
 compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
     inLoopBody = false,
     inLoopHeader = false) {
@@ -2628,11 +2615,10 @@ compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
         const noNode = this.nodes.find(n => n.id === noId);
         
         if (noNode && noNode.type === 'decision') {
-            // Check if this is a chain of decisions that should be elif
+            // Check if this is a movement chain pattern (elif chain)
+            const isMovementChain = node.text.includes('movement ==');
             
-            const isDecisionChain = true; // Always treat decision chains as elif
-            
-            if (isDecisionChain) {
+            if (isMovementChain) {
                 // Compile as elif chain
                 const elifResult = this.compileElifChainUntil(noNode, convergencePoint, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
                 code += elifResult.code || "";
@@ -2674,10 +2660,7 @@ compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
     }
     
     return code;
-}
-
-
-/**
+}  /**
      * Handle elif chains
      */
 /**
