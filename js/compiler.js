@@ -722,7 +722,13 @@ getLoopInfo(headerId) {
         this.nodes.push({
             id: joinId,
             type: "join",
-            internal: true
+            internal: true,
+            x: 0,  // Add position
+            y: 0,
+            text: "",  // Empty string, not undefined
+            varName: "",
+            prompt: "",
+            dtype: ""
         });
     
         // Get branch entry points
@@ -1000,26 +1006,29 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         // skip nodes marked in nodesToSkip
         // ===========================
         if (this.nodesToSkip && this.nodesToSkip.has(nodeId)) {
-    
             // if it's the synthetic loop header → handle exit/body routing
             if (nodeId === this.loopHeaderId) {
-                const yesId = this.getSuccessor(nodeId, "yes");
-                const noId  = this.getSuccessor(nodeId, "no");
-    
-                const isInThisLoop = contextStack.some(ctx => ctx === `loop_${nodeId}`);
-                const forInfo = this.detectForLoopPattern(nodeId);
-    
-                if (forInfo && (isInThisLoop || inLoopBody)) {
-                    return code; // highlight already emitted
+                // ... existing code ...
+            }
+            
+            // For ANY node in the skip set (including increment nodes),
+            // we should NOT compile its successors if we're in a for-loop context
+            const node = this.getNode(nodeId);
+            if (node && (node.type === "process" || node.type === "var")) {
+                // Check if this looks like an increment statement (i = i + 1, etc.)
+                const isIncrement = node.text && (
+                    node.text.includes(" = ") && 
+                    (node.text.includes(" + 1") || node.text.includes(" += 1") ||
+                     node.text.includes(" - 1") || node.text.includes(" -= 1"))
+                );
+                
+                if (isIncrement) {
+                    // Don't compile successors for increment nodes in for-loops
+                    console.log(`Skipping increment node ${nodeId} and NOT compiling successors`);
+                    return code;
                 }
-    
-                if (isInThisLoop || inLoopBody) {
-                    return code + this.compileNode(yesId, visitedInPath, [...contextStack], indentLevel, true, false);
-                } else {
-                    return code + this.compileNode(noId, visitedInPath, [...contextStack], indentLevel, false, false);
-                }
-            } 
-    
+            }
+            
             // otherwise: transparent skip
             const succ = this.getAllSuccessors(nodeId);
             for (const { nodeId: nxt } of succ) {
@@ -1878,6 +1887,19 @@ if (forInfo) {
     if (forInfo.incrementNodeId) {
         localSkips.add(forInfo.incrementNodeId);
     }
+    // In compileLoop, inside the forInfo block:
+// Find ALL nodes that look like increments for this variable
+const incrementPatterns = [
+    new RegExp(`^\\s*${forInfo.variable}\\s*=\\s*${forInfo.variable}\\s*[+-]\\s*\\d+`),
+    new RegExp(`^\\s*${forInfo.variable}\\s*[+-]=\\s*\\d+`)
+];
+
+for (const n of this.nodes) {
+    if (n.text && incrementPatterns.some(pattern => pattern.test(n.text))) {
+        localSkips.add(n.id);
+        console.log(`Marked ${n.id} (${n.text}) as increment to skip`);
+    }
+}
 
     // optionally skip init if it directly precedes header
     if (forInfo.initNodeId) {
@@ -3044,10 +3066,80 @@ isLinearDecisionChain(startDecisionId, parentDecisionId) {
 compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
     inLoopBody = false,
     inLoopHeader = false) {
-    
+    // In compileIfElse, add this check at the beginning:
+if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
+    const currentLoopCtx = [...contextStack].reverse().find(ctx => ctx.startsWith('loop_'));
+    if (currentLoopCtx) {
+        const loopHeaderId = currentLoopCtx.replace('loop_', '');
+        const forInfo = this.detectForLoopPattern(loopHeaderId);
+        
+        if (forInfo) {
+            // Check if this decision's FALSE branch is the increment
+            if (noId === forInfo.incrementNodeId) {
+                // This is a special case: if (condition) { ... } else { increment }
+                // In a for-loop, this should be: if (condition) { ... }
+                // The increment happens automatically
+                const indent = "    ".repeat(indentLevel);
+                let decisionCode = `${indent}if ${node.text}:\n`;
+                
+                // Compile YES branch only
+                const ifCode = this.compileNodeUntil(
+                    yesId, 
+                    forInfo.incrementNodeId, 
+                    new Set(), 
+                    contextStack, 
+                    indentLevel + 1, 
+                    inLoopBody, 
+                    inLoopHeader
+                );
+                decisionCode += ifCode || `${indent}    pass\n`;
+                
+                // DO NOT compile the else branch (it's the increment)
+                return decisionCode;
+            }
+        }
+    }
+}
     // Find the convergence point AFTER the entire decision chain
     let convergencePoint = this.findCommonConvergencePoint(node.id, yesId, noId);
-    
+    // In compileIfElse method, when compiling a decision:
+if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
+    // Check if we're inside a for-loop
+    const currentLoopCtx = [...contextStack].reverse().find(ctx => ctx.startsWith('loop_'));
+    if (currentLoopCtx) {
+        const loopHeaderId = currentLoopCtx.replace('loop_', '');
+        const forInfo = this.detectForLoopPattern(loopHeaderId);
+        
+        if (forInfo) {
+            // We're inside a for-loop
+            // Check if one branch goes to the increment node
+            const incId = forInfo.incrementNodeId;
+            
+            if (yesId === incId || noId === incId || 
+                this.canReach(yesId, incId, new Set([node.id])) || 
+                this.canReach(noId, incId, new Set([node.id]))) {
+                
+                // This decision leads to the for-loop increment
+                // Compile it as simple if/else without following the increment path
+                const indent = "    ".repeat(indentLevel);
+                let decisionCode = `${indent}if ${node.text}:\n`;
+                
+                // Compile YES branch but stop before increment
+                const ifCode = this.compileNodeUntil(yesId, incId, new Set(), contextStack, indentLevel + 1, inLoopBody, inLoopHeader);
+                decisionCode += ifCode || `${indent}    pass\n`;
+                
+                if (noId) {
+                    decisionCode += `${indent}else:\n`;
+                    // Compile NO branch but stop before increment
+                    const elseCode = this.compileNodeUntil(noId, incId, new Set(), contextStack, indentLevel + 1, inLoopBody, inLoopHeader);
+                    decisionCode += elseCode || `${indent}    pass\n`;
+                }
+                
+                return decisionCode;
+            }
+        }
+    }
+}
     const indent = "    ".repeat(indentLevel);
     let code = `${indent}if ${node.text}:\n`;
     
