@@ -158,9 +158,13 @@ const dfs = (nodeId) => {
 
             // Ignore if the TARGET (loop header) is a decision
             if (toNode.type === "decision") continue;
-            
+
             // Ignore if target is part of a decision-controlled loop
             if (decisionLoopNodes.has(target)) continue;
+
+            // Ignore if the back edge comes from a decision node
+            // (decisions should handle their own looping)
+            if (fromNode.type === "decision") continue;
 
             // non-decision header = implicit forever loop
             // (back edge can come from decision or non-decision)
@@ -1161,9 +1165,15 @@ getLoopInfo(headerId) {
  * Compile decision node using dominator-based loop detection
  */
 compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader) {
+    // If we're already compiling this decision as a loop, skip it
+    if (contextStack.some(ctx => ctx === `loop_${node.id}`)) {
+        console.log(`Skipping ${node.id} - already in loop context`);
+        return "";
+    }
+
     const yesId = this.getSuccessor(node.id, 'yes');
     const noId = this.getSuccessor(node.id, 'no');
-    
+
     console.log(`=== compileDecision(${node.id}: ${node.text}) ===`);
     console.log(`yesId: ${yesId}, noId: ${noId}`);
     console.log(`isSimpleWhileLoop: ${this.isSimpleWhileLoop(node.id)}`);
@@ -1185,12 +1195,13 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
         let exitId = null;
         let useNoBranch = false;
         
-        if (yesLoops && !noLoops) {
+        // Prefer yes branch as body if it loops back, otherwise no branch
+        if (yesLoops) {
             // YES branch is loop body, NO is exit
             loopBodyId = yesId;
             exitId = noId;
             useNoBranch = false;
-        } else if (!yesLoops && noLoops) {
+        } else if (noLoops) {
             // NO branch is loop body, YES is exit
             loopBodyId = noId;
             exitId = yesId;
@@ -1249,16 +1260,19 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
 isSimpleWhileLoop(decisionId) {
     const yesId = this.getSuccessor(decisionId, 'yes');
     const noId = this.getSuccessor(decisionId, 'no');
-    
-    // Check if exactly one branch loops back to the decision
-    // DON'T avoid the decision node when checking - we want to see if we can reach it!
-    const yesLoops = yesId ? this.canReach(yesId, decisionId, new Set()) : false;
-    const noLoops = noId ? this.canReach(noId, decisionId, new Set()) : false;
-    
-    console.log(`isSimpleWhileLoop(${decisionId}): yesLoops=${yesLoops}, noLoops=${noLoops}`);
-    
-    // A simple while loop: one branch loops back, the other exits
-    return (yesLoops && !noLoops) || (!yesLoops && noLoops);
+
+    // Avoid loop header decisions to prevent false positives from complex control flow
+    const avoidSet = new Set(this.loopHeaders);
+
+    // Check if a branch loops back to the decision without going through other decisions
+    const yesLoops = yesId ? this.canReach(yesId, decisionId, avoidSet) : false;
+    const noLoops = noId ? this.canReach(noId, decisionId, avoidSet) : false;
+
+    console.log(`isSimpleWhileLoop(${decisionId}): yes=${yesId}, no=${noId}, yesLoops=${yesLoops}, noLoops=${noLoops}`);
+
+    // A simple while loop: at least one branch loops back
+    // Prefer yes branch as body if it loops, otherwise no branch
+    return yesLoops || noLoops;
 }
 
 
@@ -2643,9 +2657,15 @@ compileNodeUntil(startId, stopId, visitedInPath, contextStack, indentLevel, inLo
 // BUT allow normal loop BODY nodes to compile
 // If compileNodeUntil hits a loop header decision, STOP.
 // The loop structure must be emitted by compileDecision/compileLoop, not inline here.
+// EXCEPTION: In implicit loops, allow loop headers to be compiled as regular decisions
 const n = this.getNode(startId);
 if (n && n.type === "decision" && this.isLoopHeader(startId)) {
-    return "";
+    // Check if we're in an implicit loop context
+    const inImplicitLoop = contextStack.some(ctx => ctx.startsWith('implicit_'));
+    if (!inImplicitLoop) {
+        return "";
+    }
+    // In implicit loops, allow the loop header to be compiled as a regular decision
 }
 
 
