@@ -414,10 +414,18 @@ border-radius: 6px 2px 6px 0;      /* slight ribbon look */
 pointer-events: none;              /* don’t block clicks on the node */
 z-index: 2;                     /* sit above shape borders/fills */
 }
-/* Remove the skew from the inner text since we used clip-path */
+
 .shape-output .inner-text, .shape-input .inner-text {
-    transform: skewX(15deg);
     padding: 0 10px;
+}
+
+/* Adjust dot positions to compensate for the parent skew */
+.shape-output .dot.in, .shape-input .dot.in {
+    left: calc(50% - 6.7px);
+}
+
+.shape-output .dot.out, .shape-input .dot.out {
+    left: calc(50% + 6.7px);
 }
 
 .shape-output.running, .shape-input.running {
@@ -425,6 +433,11 @@ z-index: 2;                     /* sit above shape borders/fills */
     background-color:#eed202 ;
     background-image: none !important;
     box-shadow: none;
+}
+
+/* Preserve the skew transform on hover for input/output shapes */
+.shape-output:hover, .shape-input:hover {
+    transform: skewX(-15deg) translateY(-1px);
 }
 
 /* ========== DECISION (Yellow Diamond) ========== */
@@ -520,8 +533,8 @@ z-index: 2;                     /* sit above shape borders/fills */
 
 /* ========== CONNECTION DOTS ========== */
 .dot { 
-    width: 12px; 
-    height: 12px; 
+    width: 18px; 
+    height: 18px; 
     background: #ffffff; 
     border: 3px solid #475569; 
     border-radius: 50%; 
@@ -847,11 +860,3 @@ z-index: 2;                     /* sit above shape borders/fills */
 .modal-open {
     overflow: scroll;
 }
-
-
-
-
-
-
-
-
