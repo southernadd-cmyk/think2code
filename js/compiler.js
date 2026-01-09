@@ -1811,22 +1811,22 @@ let condition = node.text;
 if (useNoBranch) condition = `not (${condition})`;
 
 if (hasBreakToEnd && exitId) {
-    // Use while-else structure
-    code += `${indent}while ${condition}:\n`;
-    
+    // Use while True with condition check (more robust than while-else for breaks)
+    code += `${indent}while True:\n`;
+
     if (this.useHighlighting) {
         code += `${indent}    highlight('${node.id}')\n`;
     }
-    
+
     const whileCtx = [...contextStack, `loop_${node.id}`];
     const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
     code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
-    
-    // Add else clause for exit path
-    if (!code.endsWith("\n")) code += "\n";
-    code += `${indent}else:\n`;
-    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 1, false, false);
-    code += exitCode || `${indent}    pass\n`;
+
+    // Check exit condition
+    code += `${indent}    if not (${condition}):\n`;
+    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 2, false, false);
+    code += exitCode || `${indent}        pass\n`;
+    code += `${indent}        break\n`;
 } else {
     // Regular while without else
     code += `${indent}while ${condition}:\n`;
