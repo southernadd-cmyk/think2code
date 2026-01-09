@@ -2589,6 +2589,8 @@ findCommonConvergencePoint(decisionId, yesId, noId) {
         const sortedCommon = Array.from(commonNodes).sort((a, b) => {
             const nodeA = this.nodes.find(n => n.id === a);
             const nodeB = this.nodes.find(n => n.id === b);
+            if (nodeA.type === 'end' && nodeB.type !== 'end') return -1;
+            if (nodeB.type === 'end' && nodeA.type !== 'end') return 1;
             if (nodeA.type === 'output' && nodeB.type !== 'output') return -1;
             if (nodeB.type === 'output' && nodeA.type !== 'output') return 1;
             return 0;
