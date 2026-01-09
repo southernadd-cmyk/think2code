@@ -553,14 +553,12 @@ canReach(startId, targetId, avoidSet = new Set()) {
  * Get loop information for a loop header
  */
 getLoopInfo(headerId) {
-    // Find all back edges to this header
-    const edgesToHeader = this.backEdges.filter(edge => edge.to === headerId);
-    if (edgesToHeader.length === 0) return null;
+    // Find back edges to this header
+    const backEdges = this.backEdges.filter(edge => edge.to === headerId);
+    if (backEdges.length === 0) return null;
     
     // For simplicity, take the first back edge
-    const backEdge = edgesToHeader[0];
-    
-    // Determine which branch contains the loop body
+    const backEdge = backEdges[0];
     const yesId = this.getSuccessor(headerId, 'yes');
     const noId = this.getSuccessor(headerId, 'no');
     
@@ -568,18 +566,44 @@ getLoopInfo(headerId) {
     let exitId = null;
     let useNoBranch = false;
     
-    // Check if YES branch leads to the back edge
-    if (yesId && this.canReach(yesId, backEdge.from, new Set([headerId]))) {
-        loopBodyId = yesId;
-        exitId = noId;
-        useNoBranch = false;
+    // Check which branch contains the back edge
+    // We need to check if the branch can reach the source of the back edge
+        // Prefer dominator/natural-loop membership to decide which branch is the loop body.
+    // This correctly handles while-loops whose body contains nested decisions/joins.
+    const loopSet = this.naturalLoops.get(headerId);
+    if (loopSet) {
+        const yesInLoop = !!(yesId && loopSet.has(yesId));
+        const noInLoop  = !!(noId && loopSet.has(noId));
+
+        // Exactly one branch should enter the natural loop; the other is the exit.
+        if (yesInLoop && !noInLoop) {
+            loopBodyId = yesId;
+            exitId = noId;
+            useNoBranch = false;
+        } else if (noInLoop && !yesInLoop) {
+            loopBodyId = noId;
+            exitId = yesId;
+            useNoBranch = true;
+        }
     }
-    // Check if NO branch leads to the back edge
-    else if (noId && this.canReach(noId, backEdge.from, new Set([headerId]))) {
-        loopBodyId = noId;
-        exitId = yesId;
-        useNoBranch = true;
+
+    // Fallback (older heuristic): pick the branch that can reach the back-edge source.
+    // Keep this for odd graphs where the natural loop set doesn't include the immediate successor.
+    if (!loopBodyId) {
+        // Check if YES branch leads to the back edge
+        if (yesId && this.canReach(yesId, backEdge.from, new Set([headerId]))) {
+            loopBodyId = yesId;
+            exitId = noId;
+            useNoBranch = false;
+        }
+        // Check if NO branch leads to the back edge
+        else if (noId && this.canReach(noId, backEdge.from, new Set([headerId]))) {
+            loopBodyId = noId;
+            exitId = yesId;
+            useNoBranch = true;
+        }
     }
+
     
     if (loopBodyId) {
         return {
@@ -1375,8 +1399,60 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
     const yesId = this.getSuccessor(node.id, 'yes');
     const noId = this.getSuccessor(node.id, 'no');
     
-    // First, check if it's a loop header
+    console.log(`=== compileDecision(${node.id}: ${node.text}) ===`);
+    console.log(`yesId: ${yesId}, noId: ${noId}`);
+    console.log(`isSimpleWhileLoop: ${this.isSimpleWhileLoop(node.id)}`);
+    console.log(`isLoopHeader: ${this.isLoopHeader(node.id)}`);
+    
+    // ============================================
+    // 1) FIRST: Check for SIMPLE WHILE-LOOP pattern 
+    // ============================================
+    if (this.isSimpleWhileLoop(node.id)) {
+        console.log(`Simple while-loop pattern detected at ${node.id}: ${node.text}`);
+        
+        // ✅ FIX: Don't avoid the decision node when checking if branches loop back!
+        const yesLoops = yesId ? this.canReach(yesId, node.id, new Set()) : false;
+        const noLoops = noId ? this.canReach(noId, node.id, new Set()) : false;
+        
+        console.log(`yesLoops: ${yesLoops}, noLoops: ${noLoops}`);
+        
+        let loopBodyId = null;
+        let exitId = null;
+        let useNoBranch = false;
+        
+        if (yesLoops && !noLoops) {
+            // YES branch is loop body, NO is exit
+            loopBodyId = yesId;
+            exitId = noId;
+            useNoBranch = false;
+        } else if (!yesLoops && noLoops) {
+            // NO branch is loop body, YES is exit
+            loopBodyId = noId;
+            exitId = yesId;
+            useNoBranch = true;
+        }
+        
+        if (loopBodyId) {
+            console.log(`Compiling as while loop: body=${loopBodyId}, exit=${exitId}, useNoBranch=${useNoBranch}`);
+            return this.compileLoop(
+                node,
+                loopBodyId,
+                exitId,
+                visitedInPath,
+                contextStack,
+                indentLevel,
+                useNoBranch,
+                inLoopBody,
+                inLoopHeader
+            );
+        }
+    }
+    
+    // ============================================
+    // 2) THEN: Check for DOMINATOR-BASED loop header
+    // ============================================
     if (this.isLoopHeader(node.id)) {
+        console.log(`Dominator-based loop header detected at ${node.id}: ${node.text}`);
         const loopInfo = this.getLoopInfo(node.id);
         if (loopInfo) {
             return this.compileLoop(
@@ -1393,13 +1469,30 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
         }
     }
     
-    // Otherwise, compile as regular if/else
+    // ============================================
+    // 3) OTHERWISE: compile as regular if/else
+    // ============================================
     return this.compileIfElse(
         node, yesId, noId,
         visitedInPath, contextStack, indentLevel,
         inLoopBody, inLoopHeader
     );
 }
+isSimpleWhileLoop(decisionId) {
+    const yesId = this.getSuccessor(decisionId, 'yes');
+    const noId = this.getSuccessor(decisionId, 'no');
+    
+    // Check if exactly one branch loops back to the decision
+    // DON'T avoid the decision node when checking - we want to see if we can reach it!
+    const yesLoops = yesId ? this.canReach(yesId, decisionId, new Set()) : false;
+    const noLoops = noId ? this.canReach(noId, decisionId, new Set()) : false;
+    
+    console.log(`isSimpleWhileLoop(${decisionId}): yesLoops=${yesLoops}, noLoops=${noLoops}`);
+    
+    // A simple while loop: one branch loops back, the other exits
+    return (yesLoops && !noLoops) || (!yesLoops && noLoops);
+}
+
 
 
     /**
