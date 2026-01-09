@@ -610,16 +610,7 @@ isConvergencePoint(nodeId) {
      * Compile a node with context tracking
      */
     compileNode(nodeId, visitedInPath, contextStack, indentLevel, inLoopBody = false, inLoopHeader = false) {
-        console.log(
-            "DEBUG compileNode ENTRY",
-            nodeId,
-            "type:",
-            this.nodes.find(n => n.id === nodeId)?.type,
-            "visited:",
-            visitedInPath.has(nodeId),
-            "context:",
-            contextStack
-          );
+
           
         if (!nodeId) return "";
     
@@ -1280,14 +1271,7 @@ return this.compileIfElse(
 );
 }
 }
-console.log(
-    "DEBUG decision",
-    node.id,
-    "YES →", yesId,
-    "NO →", noId,
-    "NO node type:",
-    noId ? this.nodes.find(n => n.id === noId)?.type : null
-  );
+
   
 // ============================================
 // 4) DEFAULT: regular if/else (NO suppression)
@@ -2645,7 +2629,7 @@ compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
         
         if (noNode && noNode.type === 'decision') {
             // Check if this is a chain of decisions that should be elif
-            // CHANGED: Remove the movement-specific check and treat all decision chains as elif
+            
             const isDecisionChain = true; // Always treat decision chains as elif
             
             if (isDecisionChain) {
