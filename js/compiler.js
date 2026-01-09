@@ -10,7 +10,6 @@ class FlowchartCompiler {
         this.forPatternCache = new Map();
         this.forPatternInProgress = new Set();
         this.insertedBreak = false;
-        this.compiledConvergencePoints = new Set(); // Track fully compiled convergence points
 
         // Dominator analysis
         this.dominators = new Map();           // nodeId -> Set of dominators
@@ -25,15 +24,10 @@ class FlowchartCompiler {
         this.findBackEdgesAndLoops();  // Step 2: Identify loops
     }
 
-    makeInternalId(prefix = "__join") {
-        // Always unique
-        return `${prefix}_${Math.random().toString(36).slice(2, 9)}`;
-    }
 
     normalizeGraph() {
-        this.autoInsertJoinNodes();
-        this.buildMaps();                // rebuild after edits
-    
+        this.buildMaps();
+
         // CRITICAL: loop analysis must match the edited graph
         this.computeDominators();
         this.findBackEdgesAndLoops();
@@ -662,164 +656,7 @@ getLoopInfo(headerId) {
     
         return visited;
     }
-    findFirstReconvergence(decisionId) {
-        const yes = this.getSuccessor(decisionId, "yes");
-        const no  = this.getSuccessor(decisionId, "no");
-        if (!yes || !no) return null;
     
-        const distFrom = (start) => {
-            const dist = new Map();
-            const q = [start];
-            dist.set(start, 0);
-    
-            while (q.length) {
-                const cur = q.shift();
-                const d = dist.get(cur);
-    
-                if (cur === decisionId) continue; // don’t pass through header
-    
-                const succs = this.getSuccessors(cur);
-                for (const s of succs) {
-                    if (!dist.has(s)) {
-                        dist.set(s, d + 1);
-                        q.push(s);
-                    }
-                }
-            }
-            return dist;
-        };
-    
-        const dy = distFrom(yes);
-        const dn = distFrom(no);
-    
-        let best = null;
-        let bestScore = Infinity;
-    
-        for (const [id, yD] of dy.entries()) {
-            if (!dn.has(id)) continue;
-    
-            const n = this.getNode(id);
-            if (!n) continue;
-    
-            // Don’t insert joins before these
-            if (n.type === "start" || n.type === "end" || n.type === "decision" || n.type === "join") continue;
-    
-            // choose closest reconvergence (minimise worst-case distance)
-            const score = Math.max(yD, dn.get(id));
-            if (score < bestScore) {
-                bestScore = score;
-                best = id;
-            }
-        }
-    
-        return best;
-    }
-    
-    insertJoinBefore(targetId, decisionId) {
-        const joinId = this.makeInternalId("__join");
-    
-        // Create JOIN node
-        this.nodes.push({
-            id: joinId,
-            type: "join",
-            internal: true,
-            x: 0,  // Add position
-            y: 0,
-            text: "",  // Empty string, not undefined
-            varName: "",
-            prompt: "",
-            dtype: ""
-        });
-    
-        // Get branch entry points
-        const yes = this.getSuccessor(decisionId, "yes");
-        const no  = this.getSuccessor(decisionId, "no");
-    
-        // Compute full reachable sets for both branches
-        const yesReach = this.reachableSet(yes, decisionId);
-        const noReach  = this.reachableSet(no, decisionId);
-    
-        // Redirect ALL incoming edges to targetId that come from either branch
-        for (const conn of this.connections) {
-            if (
-                conn.to === targetId &&
-                (yesReach.has(conn.from) || noReach.has(conn.from))
-            ) {
-                conn.to = joinId;
-            }
-        }
-        const target = this.getNode(targetId);
-if (target) {
-    // Place JOIN slightly above the target
-    const OFFSET_Y = 40;
-
-    const joinNode = this.getNode(joinId);
-    joinNode.x = target.x;
-    joinNode.y = target.y - OFFSET_Y;
-}
-
-    
-        // JOIN → target
-        this.connections.push({
-            from: joinId,
-            to: targetId,
-            port: "next"
-        });
-    
-        return joinId;
-    }
-    
-    autoInsertJoinNodes() {
-        this.buildMaps();
-    
-        // First, identify all convergence points where multiple branches meet
-        const convergencePoints = new Set();
-        
-        // Find nodes with multiple incoming connections from different decision branches
-        for (const node of this.nodes) {
-            const incoming = this.incomingMap.get(node.id) || [];
-            if (incoming.length >= 2) {
-                // Check if these incoming connections come from different decision branches
-                const sourceDecisions = new Set();
-                
-                for (const conn of incoming) {
-                    // Find the decision ancestor of this connection
-                    const decisionId = this.findNearestDecisionAncestor(conn.sourceId);
-                    if (decisionId) {
-                        sourceDecisions.add(decisionId);
-                    }
-                }
-                
-                // If we have multiple decision sources, this is a true convergence
-                if (sourceDecisions.size >= 2) {
-                    convergencePoints.add(node.id);
-                    console.log(`Found convergence point: ${node.id} with decisions: ${Array.from(sourceDecisions)}`);
-                }
-            }
-        }
-    
-        // For each convergence point that's not already a join, insert a join before it
-        for (const convId of convergencePoints) {
-            const node = this.getNode(convId);
-            if (!node || node.type === "join") continue;
-            
-            // Find all decisions that lead to this convergence point
-            const decisions = new Set();
-            for (const conn of this.incomingMap.get(convId) || []) {
-                const decisionId = this.findNearestDecisionAncestor(conn.sourceId);
-                if (decisionId) decisions.add(decisionId);
-            }
-            
-            // Insert join for each decision (or find common parent)
-            if (decisions.size > 0) {
-                // For simplicity, pick the first decision
-                const firstDecision = Array.from(decisions)[0];
-                this.insertJoinBefore(convId, firstDecision);
-                console.log(`Inserted join before ${convId} for decision ${firstDecision}`);
-            }
-        }
-    }
-                    
     /**
      * Main compilation entry point
      */
@@ -832,8 +669,6 @@ if (target) {
 
     this.insertedBreak = false;
     this.forPatternInProgress.clear();
-    this.compiledConvergencePoints.clear(); // Reset for each compilation
-    this.skipConvergencePoints = null; // Reset convergence point skipping
     const startNode = this.nodes.find(n => n.type === 'start');
     if (!startNode) return "# Add a Start node.";
     
@@ -881,16 +716,6 @@ if (target) {
  * Check if a node is a convergence point (multiple paths lead to it)
  * These nodes may need to be compiled multiple times from different paths
  */
-isConvergencePoint(nodeId) {
-    const node = this.getNode(nodeId);
-    if (!node) return false;
-
-    // Only JOIN nodes are convergence points now.
-    if (node.type !== "join") return false;
-
-    const incoming = this.incomingMap.get(nodeId) || [];
-    return incoming.length >= 2;
-}
 
 
 isLoopNode(nodeId) {
@@ -910,23 +735,6 @@ isLoopNode(nodeId) {
 }
 
 
-findNearestDecisionAncestor(nodeId) {
-    const visited = new Set();
-    let current = nodeId;
-
-    while (current && !visited.has(current)) {
-        visited.add(current);
-        const node = this.nodes.find(n => n.id === current);
-        if (!node) return null;
-        if (node.type === "decision") return node.id;
-
-        const incoming = this.incomingMap.get(current) || [];
-        if (incoming.length !== 1) return null;
-        current = incoming[0].sourceId;
-    }
-
-    return null;
-}
 
     /**
      * Compile a node with context tracking
@@ -978,7 +786,6 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         // ============================================
         // ✅ NEW: ALLOW convergence points to be revisited
         // ============================================
-        const isConvergencePoint = this.isConvergencePoint(nodeId);
 
 
 
@@ -994,17 +801,13 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         code += this.emitHighlight(nodeId, indentLevel);
         
         // ===========================
-        // cycle protection PER CONTEXT - UPDATED
+        // cycle protection - prevent infinite loops
         // ===========================
-        if (!isConvergencePoint && visitedInPath.has(nodeId)) {
+        if (visitedInPath.has(nodeId)) {
             console.log(`Skipping already visited node: ${nodeId}`);
             return "";
         }
-        
-        // Only add to visited if NOT a convergence point
-        if (!isConvergencePoint) {
-            visitedInPath.add(nodeId);
-        }
+        visitedInPath.add(nodeId);
     
         // ===========================
         // skip for-loop init nodes
@@ -1132,17 +935,6 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
     
         switch (node.type) {
 
-case "join":
-    // JOIN nodes are convergence points - compile successors but not the JOIN itself
-    const nextId = this.getSuccessor(nodeId, "next");
-    if (nextId) {
-        // Check if this JOIN has already been compiled
-        if (!this.compiledConvergencePoints.has(nodeId)) {
-            this.compiledConvergencePoints.add(nodeId);
-            return code + this.compileNode(nextId, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
-        }
-    }
-    return code;
 
     
             case "decision":
@@ -2157,6 +1949,8 @@ detectForLoopPattern(decisionId) {
     }
 
     this.forPatternInProgress.add(decisionId);
+
+    console.log(`\n=== DETECTING FOR-LOOP for decision ${decisionId} ===`);
     
     // -------------------------------
     // 1) Find initialisation before decision
@@ -2176,7 +1970,6 @@ detectForLoopPattern(decisionId) {
     }
     varName = condMatch[1];
 
-    console.log(`For-loop detection for variable: ${varName} in decision: ${decisionNode.text}`);
 
     let initNode = null;
     let startValue = null;
@@ -2200,8 +1993,7 @@ detectForLoopPattern(decisionId) {
         }
     }
 
-    if (!varName || !startValue) {
-        console.log(`No initialization found for variable ${varName}`);
+    if (!initNode || !startValue) {
         this.forPatternInProgress.delete(decisionId);
         this.forPatternCache.set(decisionId, null);
         return null;
@@ -2262,41 +2054,54 @@ const loopBodyId = this.getSuccessor(decisionId, 'yes');
 
 // Find the main execution path (the most direct path from loop start to back edge)
 const mainPath = this.findMainExecutionPath(loopBodyId, decisionId);
-console.log(`Main execution path: ${mainPath ? mainPath.join(' -> ') : 'none'}`);
-
 if (!mainPath || !mainPath.includes(incId)) {
-    console.log(`Increment ${incId} is not on the main execution path - not a for-loop`);
     this.forPatternInProgress.delete(decisionId);
     this.forPatternCache.set(decisionId, null);
     return null;
 }
 
 // Check if there are alternative paths that skip the increment
-const alternativePaths = this.findAlternativePaths(loopBodyId, decisionId, incId);
-console.log(`Found ${alternativePaths.length} alternative paths that skip increment`);
+// IMPORTANT: Only check paths that stay within the loop body (via the "yes" branch)
+// Exit paths (via the "no" branch) are valid and should be ignored
+const exitId = this.getSuccessor(decisionId, 'no');
+const alternativePaths = this.findAlternativePathsWithinLoopBody(loopBodyId, decisionId, incId, exitId);
 
+// For nested loops, be more permissive about alternative paths
+// Alternative paths that exit the loop are valid for nested structures
 if (alternativePaths.length > 0) {
-    console.log(`Not a for-loop: some paths skip the increment`);
-    this.forPatternInProgress.delete(decisionId);
-    this.forPatternCache.set(decisionId, null);
-    return null;
+    // Check if all alternative paths eventually exit the loop (go to exitId or beyond)
+    const validAlternatives = alternativePaths.filter(path => {
+        // A path is valid if it eventually reaches the exit branch
+        return exitId && path.includes(exitId);
+    });
+
+    if (validAlternatives.length !== alternativePaths.length) {
+        // Some paths skip increment without exiting - not a valid for-loop
+        this.forPatternInProgress.delete(decisionId);
+        this.forPatternCache.set(decisionId, null);
+        return null;
+    }
+    // All alternative paths exit the loop, so they're valid for nested loops
 }
 
+// TEMPORARILY DISABLE early exits check for debugging
 // ============================================
 // NEW: Check for early exits (break/return to END)
+// But for nested loops, exits to outer loops are valid
 // ============================================
 const earlyExits = this.findEarlyExits(loopBodyId, decisionId);
-console.log(`For-loop check: Found ${earlyExits.length} early exits from loop body ${loopBodyId}`);
 
-// Log the early exit paths for debugging
-for (const exitPath of earlyExits) {
-    console.log(`  Early exit path: ${exitPath.join(' -> ')}`);
-}
-
-// True for-loops should NOT have early exits to END
+// True for-loops should NOT have early exits directly to END
 // (they only exit when the loop condition becomes false)
-if (earlyExits.length > 0) {
-    console.log(`Decision ${decisionId}: REJECTED as for-loop - has ${earlyExits.length} early exit(s) to END`);
+// However, for nested loops, exits may go to outer loops which is fine
+// Only reject if exits go directly to END
+const directEndExits = earlyExits.filter(path => {
+    const lastNode = path[path.length - 1];
+    const node = this.nodes.find(n => n.id === lastNode);
+    return node && node.type === 'end';
+});
+
+if (directEndExits.length > 0) {
     this.forPatternInProgress.delete(decisionId);
     this.forPatternCache.set(decisionId, null);
     return null;
@@ -2346,7 +2151,6 @@ if (earlyExits.length > 0) {
         initNodeId: initNode?.id ?? null
     };
 
-    console.log(`Valid for-loop detected: ${varName} from ${finalStart} to ${finalEnd} step ${finalStep}`);
     this.forPatternCache.set(decisionId, result);
     return result;
 }
@@ -2411,6 +2215,42 @@ findAlternativePaths(startId, targetId, mustIncludeId, visited = new Set(), curr
         alternatives.push(...paths);
     }
     
+    return alternatives;
+}
+
+/**
+ * Find alternative paths within loop body only (ignore exit paths)
+ * This is used for nested loop detection where exit paths are valid
+ */
+findAlternativePathsWithinLoopBody(startId, targetId, mustIncludeId, exitId, visited = new Set(), currentPath = []) {
+    if (!startId || visited.has(startId)) return [];
+
+    // If we reach the exit branch, this is not a path within the loop body - ignore it
+    if (startId === exitId) {
+        return [];
+    }
+
+    if (startId === targetId) {
+        // If this path reaches target but doesn't include mustIncludeId, it's an alternative
+        if (!currentPath.includes(mustIncludeId) && !currentPath.includes(targetId)) {
+            return [[...currentPath, startId]];
+        }
+        return [];
+    }
+
+    visited.add(startId);
+    const newPath = [...currentPath, startId];
+    const alternatives = [];
+
+    const outgoing = this.outgoingMap.get(startId) || [];
+    for (const edge of outgoing) {
+        // Skip paths that go to the exit branch
+        if (edge.targetId === exitId) continue;
+
+        const paths = this.findAlternativePathsWithinLoopBody(edge.targetId, targetId, mustIncludeId, exitId, new Set([...visited]), newPath);
+        alternatives.push(...paths);
+    }
+
     return alternatives;
 }
 
@@ -2917,9 +2757,9 @@ if (!isConvergence) {
 } else {
     // Only mark NON-JOIN convergence points here
     const node = this.nodes.find(n => n.id === startId);
-    if (node && node.type !== "join") {
-        if (this.compiledConvergencePoints.has(startId)) return "";
-        this.compiledConvergencePoints.add(startId);
+    if (node) {
+        if (visitedInPath.has(startId)) return "";
+        visitedInPath.add(startId);
     }
 }
 
@@ -3430,42 +3270,6 @@ compileElifChain(elifNode, visitedInPath, contextStack, indentLevel ,inLoopBody,
 
     let currentElif = elifNode;
     const seen = new Set();   // prevent the same decision reappearing in the chain
-    
-    // FIRST PASS: Find all convergence points from all branches BEFORE compiling
-    const convergencePoints = new Set();
-    let tempElif = elifNode;
-    const tempSeen = new Set();
-    
-    while (tempElif && tempElif.type === 'decision') {
-        if (tempSeen.has(tempElif.id)) break;
-        tempSeen.add(tempElif.id);
-        
-        const yesId = this.getSuccessor(tempElif.id, 'yes');
-        const noId = this.getSuccessor(tempElif.id, 'no');
-        
-        if (yesId) {
-            const conv = this.findConvergencePoint(yesId, new Set());
-            if (conv) convergencePoints.add(conv);
-        }
-        
-        if (!noId) break;
-        const nextNode = this.nodes.find(n => n.id === noId);
-        if (nextNode && nextNode.type === 'decision') {
-            tempElif = nextNode;
-            continue;
-        }
-        if (noId) {
-            const conv = this.findConvergencePoint(noId, new Set());
-            if (conv) convergencePoints.add(conv);
-        }
-        break;
-    }
-    
-    // Mark that we're compiling an elif chain - prevent branches from compiling convergence points
-    const originalSkipConvergence = this.skipConvergencePoints;
-    this.skipConvergencePoints = new Set(convergencePoints); // Add all convergence points to skip set
-
-    // SECOND PASS: Compile all branches
     while (currentElif && currentElif.type === 'decision') {
         // Stop if we've already emitted this decision in the chain
         if (seen.has(currentElif.id)) break;
@@ -3499,60 +3303,10 @@ compileElifChain(elifNode, visitedInPath, contextStack, indentLevel ,inLoopBody,
 
         break;
     }
-    
-    // Restore original skipConvergencePoints
-    this.skipConvergencePoints = originalSkipConvergence;
-    
-    // Return code and convergence points
-    return {
-        code: code,
-        convergencePoints: Array.from(convergencePoints)
-    };
+
+    return code;
 }
 
-/**
- * Find the first convergence point reachable from startId
- */
-findConvergencePoint(startId, visited = new Set()) {
-    if (!startId || visited.has(startId)) return null;
-    visited.add(startId);
-    
-    // If this is a convergence point, return it
-    if (this.isConvergencePoint(startId)) {
-        return startId;
-    }
-    
-    const node = this.nodes.find(n => n.id === startId);
-    if (!node) return null;
-    
-    // If this is END, return null (not a convergence point we care about)
-    if (node.type === 'end') {
-        return null;
-    }
-    
-    // Check successors
-    if (node.type === 'decision') {
-        const yesId = this.getSuccessor(startId, 'yes');
-        const noId = this.getSuccessor(startId, 'no');
-        
-        // Check both branches, return the first convergence point found
-        if (yesId) {
-            const yesConv = this.findConvergencePoint(yesId, new Set([...visited]));
-            if (yesConv) return yesConv;
-        }
-        if (noId) {
-            const noConv = this.findConvergencePoint(noId, new Set([...visited]));
-            if (noConv) return noConv;
-        }
-    } else {
-        const nextId = this.getSuccessor(startId, 'next');
-        if (nextId) {
-            return this.findConvergencePoint(nextId, new Set([...visited]));
-        }
-    }
-    
-    return null; // No convergence point found
-}
 
 /**
  * Check if a path from startId has any exit (reaches END without returning to loopHeaderId)

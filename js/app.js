@@ -911,7 +911,6 @@ this.svgLayer.appendChild(this.dragLine);
 
 // Draw each connection
 this.connections.forEach(c => {
-
     // world coords from node geometry
 const p1w = this.getPortPos(c.from, c.port);
 const p2w = this.getPortPos(c.to,   'in');
