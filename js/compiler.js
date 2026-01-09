@@ -1149,14 +1149,17 @@ case "join":
                 return code + this.compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
     
             case "output":
-                code += `${indent}print(${node.text})\n`;
+                code += `${indent}print(${node.text || '""'})\n`;
                 break;
     
-            case "input":
+            case "input": {
                 const wrap = node.dtype === "int" ? "int(input(" : "input(";
-                code += `${indent}${node.varName} = ${wrap}${node.prompt})\n`;
+                const varName = node.varName || "x";
+                const prompt = node.prompt || '""';
+                code += `${indent}${varName} = ${wrap}${prompt})\n`;
                 if (node.dtype === "int") code = code.trimEnd() + ")\n";
                 break;
+            }
     
             case "process":
             case "var":
@@ -1245,14 +1248,17 @@ compileSingleNode(nodeId, indentLevel) {
     
     switch (node.type) {
         case "output":
-            code += `${indent}print(${node.text})\n`;
+            code += `${indent}print(${node.text || '""'})\n`;
             break;
             
-        case "input":
+        case "input": {
             const wrap = node.dtype === "int" ? "int(input(" : "input(";
-            code += `${indent}${node.varName} = ${wrap}"${node.prompt}")\n`;
+            const varName = node.varName || "x";
+            const prompt = node.prompt || '""';
+            code += `${indent}${varName} = ${wrap}${prompt})\n`;
             if (node.dtype === "int") code = code.trimEnd() + ")\n";
             break;
+        }
             
         case "decision":
             // decision itself is handled elsewhere – treat as no-op here
@@ -2660,11 +2666,14 @@ return null;
                     code += `${indent}print(${node.text})\n`;
                     break;
 
-                    case 'input':
+                    case 'input': {
                         const wrap = node.dtype === 'int' ? 'int(input(' : 'input(';
-                        code += `${indent}${node.varName} = ${wrap}"${node.prompt}")\n`;
+                        const varName = node.varName || "x";
+                        const prompt = node.prompt || '""';
+                        code += `${indent}${varName} = ${wrap}${prompt})\n`;
                         if (node.dtype === 'int') code = code.trimEnd() + ")\n";
                         break;
+                    }
                     default:
                         if (node.text) code += `${indent}${node.text}\n`;
                         break;
@@ -2929,11 +2938,14 @@ if (!isConvergence) {
         case "output":
             code += `${indent}print(${node.text})\n`;
             break;
-        case "input":
+        case "input": {
             const wrap = node.dtype === "int" ? "int(input(" : "input(";
-            code += `${indent}${node.varName} = ${wrap}${node.prompt})\n`;
+            const varName = node.varName || "x";
+            const prompt = node.prompt || '""';
+            code += `${indent}${varName} = ${wrap}${prompt})\n`;
             if (node.dtype === "int") code = code.trimEnd() + ")\n";
             break;
+        }
         case "process":
         case "var":
         case "list":
