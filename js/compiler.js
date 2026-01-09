@@ -552,70 +552,6 @@ canReach(startId, targetId, avoidSet = new Set()) {
 /**
  * Get loop information for a loop header
  */
-getLoopInfo(headerId) {
-    // Find back edges to this header
-    const backEdges = this.backEdges.filter(edge => edge.to === headerId);
-    if (backEdges.length === 0) return null;
-    
-    // For simplicity, take the first back edge
-    const backEdge = backEdges[0];
-    const yesId = this.getSuccessor(headerId, 'yes');
-    const noId = this.getSuccessor(headerId, 'no');
-    
-    let loopBodyId = null;
-    let exitId = null;
-    let useNoBranch = false;
-    
-    // Check which branch contains the back edge
-    // We need to check if the branch can reach the source of the back edge
-        // Prefer dominator/natural-loop membership to decide which branch is the loop body.
-    // This correctly handles while-loops whose body contains nested decisions/joins.
-    const loopSet = this.naturalLoops.get(headerId);
-    if (loopSet) {
-        const yesInLoop = !!(yesId && loopSet.has(yesId));
-        const noInLoop  = !!(noId && loopSet.has(noId));
-
-        // Exactly one branch should enter the natural loop; the other is the exit.
-        if (yesInLoop && !noInLoop) {
-            loopBodyId = yesId;
-            exitId = noId;
-            useNoBranch = false;
-        } else if (noInLoop && !yesInLoop) {
-            loopBodyId = noId;
-            exitId = yesId;
-            useNoBranch = true;
-        }
-    }
-
-    // Fallback (older heuristic): pick the branch that can reach the back-edge source.
-    // Keep this for odd graphs where the natural loop set doesn't include the immediate successor.
-    if (!loopBodyId) {
-        // Check if YES branch leads to the back edge
-        if (yesId && this.canReach(yesId, backEdge.from, new Set([headerId]))) {
-            loopBodyId = yesId;
-            exitId = noId;
-            useNoBranch = false;
-        }
-        // Check if NO branch leads to the back edge
-        else if (noId && this.canReach(noId, backEdge.from, new Set([headerId]))) {
-            loopBodyId = noId;
-            exitId = yesId;
-            useNoBranch = true;
-        }
-    }
-
-    
-    if (loopBodyId) {
-        return {
-            bodyId: loopBodyId,
-            exitId: exitId,
-            useNoBranch: useNoBranch,
-            backEdgeFrom: backEdge.from
-        };
-    }
-    
-    return null;
-}
     getSuccessor(nodeId, port = 'next') {
         const outgoing = this.outgoingMap.get(nodeId) || [];
         const conn = outgoing.find(c => c.port === port);
@@ -1283,6 +1219,7 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
     if (this.isLoopHeader(node.id)) {
         console.log(`Dominator-based loop header detected at ${node.id}: ${node.text}`);
         const loopInfo = this.getLoopInfo(node.id);
+        console.log(`Loop info for ${node.id}:`, loopInfo);
         if (loopInfo) {
             return this.compileLoop(
                 node,
@@ -1295,6 +1232,8 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
                 inLoopBody,
                 inLoopHeader
             );
+        } else {
+            console.log(`No loop info found for loop header ${node.id}`);
         }
     }
     
@@ -2587,90 +2526,74 @@ reachesEndWithoutPassing(startId, forbiddenId, visited = new Set()) {
  * must pass through it before reaching END.
  * SIMPLIFIED VERSION: If both branches can reach it without passing through END, it's valid.
  */
-isTrueConvergenceAfterDecision(decisionId, candidateId) {
-    const yesId = this.getSuccessor(decisionId, 'yes');
-    const noId = this.getSuccessor(decisionId, 'no');
-
-    // Simplified: If both branches can reach candidateId without hitting END first, it's valid
-    const yesCanReach = yesId ? this.canReachWithoutEnd(yesId, candidateId, new Set([decisionId])) : false;
-    const noCanReach = noId ? this.canReachWithoutEnd(noId, candidateId, new Set([decisionId])) : false;
-
-    return yesCanReach && noCanReach;
-}
-
-/**
- * Check if startId can reach targetId without hitting END
- */
-canReachWithoutEnd(startId, targetId, visited = new Set()) {
-    if (!startId || visited.has(startId)) return false;
-    if (startId === targetId) return true;
-    
-    const node = this.nodes.find(n => n.id === startId);
-    if (node && node.type === 'end') return false; // Stop at END
-    
-    visited.add(startId);
-    
-    const outgoing = this.outgoingMap.get(startId) || [];
-    for (const edge of outgoing) {
-        if (this.canReachWithoutEnd(edge.targetId, targetId, new Set([...visited]))) {
-            return true;
-        }
-    }
-    
-    return false;
-}
 
 /**
  * Find the common convergence point after all branches of a decision
  */
 findCommonConvergencePoint(decisionId, yesId, noId) {
-    // Get all end points of YES branch
-    const yesEnds = this.findAllEndPoints(yesId, new Set([decisionId]));
-    
-    // Get all end points of NO branch (if it exists)
-    const noEnds = noId ? this.findAllEndPoints(noId, new Set([decisionId])) : [];
-    
-    // Filter out END nodes
-    const filteredYesEnds = yesEnds.filter(id => {
-        const node = this.nodes.find(n => n.id === id);
-        return node && node.type !== 'end';
-    });
-    
-    const filteredNoEnds = noEnds.filter(id => {
-        const node = this.nodes.find(n => n.id === id);
-        return node && node.type !== 'end';
-    });
-    
-    // Find common nodes (intersection)
-// ✅ FIRST: if a JOIN exists that both branches reach, use it as convergence
-const joinConv = this.findFirstCommonJoinBetweenBranches(decisionId, yesId, noId);
-if (joinConv) return joinConv;
+    // Simple approach: find the first common node by traversing a few levels
 
-// Find common nodes (intersection)
-const common = yesEnds.filter(nodeId => noEnds.includes(nodeId));
+    // Collect all non-decision nodes reachable from each branch
+    const collectNonDecisions = (startId, visited = new Set(), depth = 0) => {
+        const results = new Set();
+        if (!startId || visited.has(startId) || depth > 8) return results;
+        visited.add(startId);
 
-// Filter out false convergence nodes
-const trueCommon = common.filter(nodeId => this.isTrueConvergenceAfterDecision(decisionId, nodeId));
+        const node = this.nodes.find(n => n.id === startId);
+        if (!node) return results;
 
-if (trueCommon.length > 0) {
-    return trueCommon[0];
-}
+        // Collect non-decision nodes
+        if (node.type !== 'decision') {
+            results.add(startId);
+        }
 
+        // Continue traversing if not too deep
+        if (depth < 6) {
+            const successors = this.getSuccessors(startId);
+            for (const succId of successors) {
+                const subResults = collectNonDecisions(succId, new Set([...visited]), depth + 1);
+                subResults.forEach(id => results.add(id));
+            }
+        }
 
-    
-    // If no direct common, check if NO branch is another decision
-    if (noId) {
-        const noNode = this.nodes.find(n => n.id === noId);
-        if (noNode && noNode.type === 'decision') {
-            // Recursively check the elif chain
-            const noYesId = this.getSuccessor(noId, 'yes');
-            const noNoId = this.getSuccessor(noId, 'no');
-            return this.findCommonConvergencePoint(noId, noYesId, noNoId);
+        return results;
+    };
+
+    const yesNodes = collectNonDecisions(yesId);
+    const noNodes = collectNonDecisions(noId);
+
+    // Find common nodes
+    const commonNodes = new Set();
+    for (const nodeId of yesNodes) {
+        if (noNodes.has(nodeId)) {
+            commonNodes.add(nodeId);
         }
     }
-    
+
+    // Return the first common node (prefer output nodes)
+    if (commonNodes.size > 0) {
+        const sortedCommon = Array.from(commonNodes).sort((a, b) => {
+            const nodeA = this.nodes.find(n => n.id === a);
+            const nodeB = this.nodes.find(n => n.id === b);
+            if (nodeA.type === 'output' && nodeB.type !== 'output') return -1;
+            if (nodeB.type === 'output' && nodeA.type !== 'output') return 1;
+            return 0;
+        });
+        return sortedCommon[0];
+    }
+
+    // If no direct common target, check if NO branch is another decision (elif chain)
+    const noNode = this.nodes.find(n => n.id === noId);
+    if (noNode && noNode.type === 'decision') {
+        // Recursively check the elif chain
+        const noYesId = this.getSuccessor(noId, 'yes');
+        const noNoId = this.getSuccessor(noId, 'no');
+        return this.findCommonConvergencePoint(noId, noYesId, noNoId);
+    }
+
     return null;
 }
+
 
 /**
  * Find all end points (nodes with no outgoing "next" or convergence points)
@@ -2687,19 +2610,6 @@ findAllEndPoints(startId, visited = new Set()) {
         return [];
     }
 
-    // If this is a convergence point AND has outgoing connections, it's an end point for branch compilation
-    if (this.isConvergencePoint(startId)) {
-        // Check if it has any outgoing connections (other than to END)
-        const outgoing = this.outgoingMap.get(startId) || [];
-        const hasNonEndOutgoing = outgoing.some(conn => {
-            const targetNode = this.nodes.find(n => n.id === conn.targetId);
-            return targetNode && targetNode.type !== 'end';
-        });
-        
-        if (!hasNonEndOutgoing) {
-            return [startId];
-        }
-    }
 
     // IMPORTANT: decisions usually have no "next", so handle decisions BEFORE nextId logic
     if (node.type === 'decision') {
@@ -2743,25 +2653,11 @@ if (n && n.type === "decision" && this.isLoopHeader(startId)) {
 
 
     const node = this.nodes.find(n => n.id === startId);
-if (node && node.type === "join") {
-    return "";
-}
 
     
-// Prevent infinite recursion, but allow convergence points
-const isConvergence = this.isConvergencePoint(startId);
-
-if (!isConvergence) {
-    if (visitedInPath.has(startId)) return "";
-    visitedInPath.add(startId);
-} else {
-    // Only mark NON-JOIN convergence points here
-    const node = this.nodes.find(n => n.id === startId);
-    if (node) {
-        if (visitedInPath.has(startId)) return "";
-        visitedInPath.add(startId);
-    }
-}
+// Prevent infinite recursion
+if (visitedInPath.has(startId)) return "";
+visitedInPath.add(startId);
 
 
     
@@ -2826,26 +2722,6 @@ if (nextId && contextStack.some(ctx => ctx.startsWith("loop_") || ctx.startsWith
     }
     
     return code;
-}
-findFirstCommonJoinBetweenBranches(decisionId, yesId, noId) {
-    if (!yesId || !noId) return null;
-
-    // Reachable sets from each branch (do not pass through the decision itself)
-    const yesReach = this.reachableSet(yesId, decisionId);
-    const noReach  = this.reachableSet(noId, decisionId);
-
-    // Collect JOIN nodes reachable from both branches
-    const commonJoins = [];
-    for (const id of yesReach) {
-        if (!noReach.has(id)) continue;
-        const n = this.getNode(id);
-        if (n && n.type === "join") {
-            commonJoins.push(id);
-        }
-    }
-
-    // If multiple, just take the first (good enough because joins are inserted "closest")
-    return commonJoins.length > 0 ? commonJoins[0] : null;
 }
 
 /**
@@ -3222,35 +3098,17 @@ elseCode = this.compileNodeUntil(
     
     // AFTER the if-elif-else chain, compile the convergence point
 // AFTER the if / elif / else chain:
-// If convergence is a JOIN, compile its successor ONCE
+// Compile the convergence point
 if (convergencePoint) {
-    const convNode = this.nodes.find(n => n.id === convergencePoint);
-
-    if (convNode && convNode.type === "join") {
-        const nextId = this.getSuccessor(convergencePoint, "next");
-        if (nextId) {
-            if (!code.endsWith("\n")) code += "\n";
-            code += this.compileNode(
-                nextId,
-                visitedInPath,
-                contextStack,
-                indentLevel,
-                inLoopBody,
-                inLoopHeader
-            );
-        }
-    } else {
-        // Legacy behaviour (non-JOIN convergence)
-        if (!code.endsWith("\n")) code += "\n";
-        code += this.compileNode(
-            convergencePoint,
-            visitedInPath,
-            contextStack,
-            indentLevel,
-            inLoopBody,
-            inLoopHeader
-        );
-    }
+    if (!code.endsWith("\n")) code += "\n";
+    code += this.compileNode(
+        convergencePoint,
+        visitedInPath,
+        contextStack,
+        indentLevel,
+        inLoopBody,
+        inLoopHeader
+    );
 }
 
     
