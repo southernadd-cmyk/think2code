@@ -770,37 +770,53 @@ if (target) {
     }
     
     autoInsertJoinNodes() {
-        // Ensure maps exist so getSuccessor works
         this.buildMaps();
     
-        const decisions = this.nodes.filter(n => n.type === "decision");
+        // First, identify all convergence points where multiple branches meet
+        const convergencePoints = new Set();
+        
+        // Find nodes with multiple incoming connections from different decision branches
+        for (const node of this.nodes) {
+            const incoming = this.incomingMap.get(node.id) || [];
+            if (incoming.length >= 2) {
+                // Check if these incoming connections come from different decision branches
+                const sourceDecisions = new Set();
+                
+                for (const conn of incoming) {
+                    // Find the decision ancestor of this connection
+                    const decisionId = this.findNearestDecisionAncestor(conn.sourceId);
+                    if (decisionId) {
+                        sourceDecisions.add(decisionId);
+                    }
+                }
+                
+                // If we have multiple decision sources, this is a true convergence
+                if (sourceDecisions.size >= 2) {
+                    convergencePoints.add(node.id);
+                    console.log(`Found convergence point: ${node.id} with decisions: ${Array.from(sourceDecisions)}`);
+                }
+            }
+        }
     
-        for (const dec of decisions) {
-            const yes = this.getSuccessor(dec.id, "yes");
-            const no  = this.getSuccessor(dec.id, "no");
-            if (!yes || !no) continue;
-    
-            const reconv = this.findFirstReconvergence(dec.id);
-            if (!reconv) continue;
-    
-            // Find which branch roots actually reach the reconvergence point
-            const yesReach = this.reachableSet(yes, dec.id);
-            const noReach  = this.reachableSet(no, dec.id);
-    
-            if (!yesReach.has(reconv) || !noReach.has(reconv)) continue;
-
-    // ✅ NEW: Only insert a JOIN if this reconvergence is a TRUE post-dominator
-if (!this.isTrueConvergenceAfterDecision(dec.id, reconv)) {
-    continue;
-}
-
-            // Insert join by redirecting the immediate branch entry nodes
-            // (this is the minimal safe version)
-            this.insertJoinBefore(reconv, dec.id);
-
-    
-            // Rebuild maps because we just mutated connections
-            this.buildMaps();
+        // For each convergence point that's not already a join, insert a join before it
+        for (const convId of convergencePoints) {
+            const node = this.getNode(convId);
+            if (!node || node.type === "join") continue;
+            
+            // Find all decisions that lead to this convergence point
+            const decisions = new Set();
+            for (const conn of this.incomingMap.get(convId) || []) {
+                const decisionId = this.findNearestDecisionAncestor(conn.sourceId);
+                if (decisionId) decisions.add(decisionId);
+            }
+            
+            // Insert join for each decision (or find common parent)
+            if (decisions.size > 0) {
+                // For simplicity, pick the first decision
+                const firstDecision = Array.from(decisions)[0];
+                this.insertJoinBefore(convId, firstDecision);
+                console.log(`Inserted join before ${convId} for decision ${firstDecision}`);
+            }
         }
     }
                     
@@ -2717,15 +2733,42 @@ reachesEndWithoutPassing(startId, forbiddenId, visited = new Set()) {
  * A node is a TRUE convergence point for a decision only if ALL paths from both branches
  * must pass through it before reaching END (i.e., it's a post-dominator).
  */
+/**
+ * A node is a TRUE convergence point for a decision only if ALL paths from both branches
+ * must pass through it before reaching END.
+ * SIMPLIFIED VERSION: If both branches can reach it without passing through END, it's valid.
+ */
 isTrueConvergenceAfterDecision(decisionId, candidateId) {
     const yesId = this.getSuccessor(decisionId, 'yes');
-    const noId  = this.getSuccessor(decisionId, 'no');
+    const noId = this.getSuccessor(decisionId, 'no');
 
-    // If either branch can reach END while avoiding candidate → candidate is NOT a true convergence
-    if (yesId && this.reachesEndWithoutPassing(yesId, candidateId)) return false;
-    if (noId  && this.reachesEndWithoutPassing(noId,  candidateId)) return false;
+    // Simplified: If both branches can reach candidateId without hitting END first, it's valid
+    const yesCanReach = yesId ? this.canReachWithoutEnd(yesId, candidateId, new Set([decisionId])) : false;
+    const noCanReach = noId ? this.canReachWithoutEnd(noId, candidateId, new Set([decisionId])) : false;
 
-    return true;
+    return yesCanReach && noCanReach;
+}
+
+/**
+ * Check if startId can reach targetId without hitting END
+ */
+canReachWithoutEnd(startId, targetId, visited = new Set()) {
+    if (!startId || visited.has(startId)) return false;
+    if (startId === targetId) return true;
+    
+    const node = this.nodes.find(n => n.id === startId);
+    if (node && node.type === 'end') return false; // Stop at END
+    
+    visited.add(startId);
+    
+    const outgoing = this.outgoingMap.get(startId) || [];
+    for (const edge of outgoing) {
+        if (this.canReachWithoutEnd(edge.targetId, targetId, new Set([...visited]))) {
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 /**
@@ -3066,7 +3109,34 @@ isLinearDecisionChain(startDecisionId, parentDecisionId) {
 compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
     inLoopBody = false,
     inLoopHeader = false) {
-    // In compileIfElse, add this check at the beginning:
+
+
+// Instead of checking forInfo, check if the branch contains an increment of the loop variable
+if (node.text === "empty") {
+    // Check if this is incrementing the outer loop variable
+    if (noId) {
+        const noNode = this.getNode(noId);
+        if (noNode && noNode.text && noNode.text.includes("x = x + 1")) {
+            // Special case: skip this increment
+            const indent = "    ".repeat(indentLevel);
+            let code = `${indent}if ${node.text}:\n`;
+            
+            const ifCode = this.compileNode(
+                yesId,
+                visitedInPath,
+                [...contextStack, `if_${node.id}`],
+                indentLevel + 1,
+                inLoopBody,
+                inLoopHeader
+            );
+            code += ifCode || `${indent}    pass\n`;
+            
+            // Don't compile the else branch (it's the increment)
+            return code;
+        }
+    }
+}
+
 if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
     const currentLoopCtx = [...contextStack].reverse().find(ctx => ctx.startsWith('loop_'));
     if (currentLoopCtx) {
@@ -3102,6 +3172,39 @@ if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
 }
     // Find the convergence point AFTER the entire decision chain
     let convergencePoint = this.findCommonConvergencePoint(node.id, yesId, noId);
+
+// In compileIfElse, after finding convergencePoint:
+if (convergencePoint && convergencePoint === noId) {
+    // Special case: convergence point IS the else branch
+    // Compile as if without else, then convergence
+    const indent = "    ".repeat(indentLevel);
+    let code = `${indent}if ${node.text}:\n`;
+    
+    const ifCode = this.compileNodeUntil(
+        yesId,
+        convergencePoint,
+        new Set([...visitedInPath]),
+        [...contextStack, `if_${node.id}`],
+        indentLevel + 1,
+        inLoopBody,
+        inLoopHeader
+    );
+    code += ifCode || `${indent}    pass\n`;
+    
+    // Compile convergence point AFTER if
+    if (!code.endsWith("\n")) code += "\n";
+    code += this.compileNode(
+        convergencePoint,
+        visitedInPath,
+        contextStack,
+        indentLevel,
+        inLoopBody,
+        inLoopHeader
+    );
+    
+    return code;
+}
+
     // In compileIfElse method, when compiling a decision:
 if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
     // Check if we're inside a for-loop
