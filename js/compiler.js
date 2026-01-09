@@ -2769,7 +2769,14 @@ compileElifChainUntil(elifNode, convergencePoint, visitedInPath, contextStack, i
         const elifVisited = new Set([...visitedInPath]);
         
         // Compile YES branch up to convergence point
-        const elifCode = this.compileNodeUntil(elifYesId, convergencePoint, elifVisited, elifContext, indentLevel + 1, inLoopBody, inLoopHeader);
+        let elifCode = this.compileNodeUntil(elifYesId, convergencePoint, elifVisited, elifContext, indentLevel + 1, inLoopBody, inLoopHeader);
+
+        // Add break if this branch exits the loop
+        if (convergencePoint && this.getNode(convergencePoint).type === 'end' && inLoopBody) {
+            if (!elifCode.endsWith("\n")) elifCode += "\n";
+            elifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+        }
+
         code += elifCode || `${indent}    pass\n`;
         
         if (!elifNoId) break;
@@ -3012,6 +3019,12 @@ if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
             inLoopBody,
             inLoopHeader
         );
+
+        // Add break if this branch exits the loop
+        if (this.getNode(convergencePoint).type === 'end' && inLoopBody) {
+            if (!ifCode.endsWith("\n")) ifCode += "\n";
+            ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+        }
     } else {
         ifCode = this.compileNode(
             yesId,
