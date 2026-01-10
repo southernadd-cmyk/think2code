@@ -227,7 +227,7 @@ function orthogonalSmart(p1, p2, nodes) {
 window. App = {
     nodes: [], connections: [], nextId: 1, isRunning: false,
     isConnecting: false, connStart: null, fullExecCode: "",
-    editingNode: null, selectedNodeId: null,viewportScale: 1,
+    editingNode: null, selectedNodeId: null, selectedConnectionIndex: null, viewportScale: 1,
 viewportX: 0,
 viewportY: 0,
 minScale: 0.3,
@@ -759,6 +759,22 @@ window.addEventListener("resize", () => {
         this.applyViewportTransform();
     },
 
+    selectConnection(index) {
+        this.selectedConnectionIndex = this.selectedConnectionIndex === index ? null : index;
+        // Deselect node when selecting connection
+        this.selectedNodeId = null;
+        this.drawConns();
+    },
+
+    deleteSelectedConnection() {
+        if (this.selectedConnectionIndex !== null) {
+            this.connections.splice(this.selectedConnectionIndex, 1);
+            this.selectedConnectionIndex = null;
+            this.drawConns();
+            this.updateCode();
+        }
+    },
+
     handleInput(prompt) {
         return new Promise((resolve) => {
             const modal = new bootstrap.Modal(document.getElementById('inputModal'));
@@ -997,19 +1013,36 @@ dStr = cleanPath(dStr);  // Add this line
 const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
 path.setAttribute('d', dStr);
 
-    path.setAttribute('d', dStr);
+    // Store connection index for selection
+    const connIndex = this.connections.indexOf(c);
+    path.dataset.connIndex = connIndex;
 
-    // colors by port
+    // colors by port + selection state
+    const isSelected = this.selectedConnectionIndex === connIndex;
     path.setAttribute(
         'stroke',
+        isSelected ? '#2563eb' : // Blue for selected
         c.port === 'yes' ? '#16a34a' :
         c.port === 'no'  ? '#dc2626' :
                         '#444'
     );
 
-    path.setAttribute('stroke-width', 2.5);
+    path.setAttribute('stroke-width', isSelected ? 8 : 6); // Thick enough to be easily clickable
+
+    // Add CSS class for additional styling
+    if (isSelected) {
+        path.classList.add('selected-connection');
+    }
     path.setAttribute('fill', 'none');
     path.setAttribute('marker-end', 'url(#arrowhead)');
+
+    // Make connections clickable for selection
+    path.style.cursor = 'pointer';
+    path.style.pointerEvents = 'stroke'; // Make stroke clickable
+    path.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.selectConnection(connIndex);
+    });
 
     // tidy corners
     path.setAttribute('stroke-linejoin', 'round');
@@ -1160,6 +1193,11 @@ this.canvas.addEventListener("pointerdown", (e) => {
         }
     // only pan if clicking empty canvas background
     if (e.target.id === "canvas" || e.target.id === "connections-layer") {
+        // Deselect connection if clicking on empty space
+        if (this.selectedConnectionIndex !== null) {
+            this.selectedConnectionIndex = null;
+            this.drawConns();
+        }
         isPanning = true;
         panStartX = e.clientX - this.viewportX;
         panStartY = e.clientY - this.viewportY;
@@ -1256,19 +1294,30 @@ document.addEventListener("click", (e) => {
 });
 
         window.onkeydown = (e) => {
+            // Delete selected nodes
             if ((e.key === "Delete" || e.key === "Backspace") && this.selectedNodeId) {
                 if (document.activeElement.tagName === "INPUT") return;
-                const n = this.nodes.find(x => x.id === this.selectedNodeId); 
+                const n = this.nodes.find(x => x.id === this.selectedNodeId);
                 if(n?.type === 'start') return;
-                
+
                 this.nodes = this.nodes.filter(x => x.id !== this.selectedNodeId);
-                this.connections = this.connections.filter(c => 
+                this.connections = this.connections.filter(c =>
                     c.from !== this.selectedNodeId && c.to !== this.selectedNodeId);
-                
-                document.getElementById(this.selectedNodeId)?.remove(); 
-                this.selectedNodeId = null; 
-                this.drawConns(); 
+
+                document.getElementById(this.selectedNodeId)?.remove();
+                this.selectedNodeId = null;
+                this.drawConns();
                 this.updateCode();
+            }
+            // Delete selected connections
+            else if (e.key === "Delete" && this.selectedConnectionIndex !== null) {
+                if (document.activeElement.tagName === "INPUT") return;
+                this.deleteSelectedConnection();
+            }
+            // Deselect connection when pressing Escape
+            else if (e.key === "Escape" && this.selectedConnectionIndex !== null) {
+                this.selectedConnectionIndex = null;
+                this.drawConns();
             }
         };
         
