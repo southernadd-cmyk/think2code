@@ -2477,23 +2477,14 @@ if (forInfo) {
     this.loopHeaderId = node.id;
 
     // -------------------------------
-    // Detect if loop variable is used for array indexing
-    // -------------------------------
-    const usesArrayIndexing = this.detectArrayIndexing(forInfo.variable);
-
-    // -------------------------------
     // create a local skip set
     // -------------------------------
     const savedSkip = this.nodesToSkip;
     const localSkips = new Set();
 
-    // For while loops, don't skip increment - it should execute
     // For for loops, skip increment as it's implicit in range
-    if (!usesArrayIndexing) {
-        // For for loops, skip increment as it's implicit in range
-        if (forInfo.incrementNodeId) {
-            localSkips.add(forInfo.incrementNodeId);
-        }
+    if (forInfo.incrementNodeId) {
+        localSkips.add(forInfo.incrementNodeId);
     }
     // In compileLoop, inside the forInfo block:
 // Find ALL nodes that look like increments for this variable
@@ -2523,29 +2514,18 @@ for (const n of this.nodes) {
     this.nodesToSkip = localSkips;
 
     // -------------------------------
-    // Choose loop type based on usage
+    // Generate for loop with flowchart-correct range
     // -------------------------------
     let step = forInfo.step;
     if (!step) {
         step = (parseInt(forInfo.start) <= parseInt(forInfo.end)) ? 1 : -1;
     }
 
-    if (usesArrayIndexing) {
-        // Generate while loop for exact flowchart equivalence
-        code += `${indent}${forInfo.variable} = ${forInfo.start}\n`;
-        code += `${indent}while ${node.text}:\n`;
+    const rangeStr = `range(${forInfo.start}, ${forInfo.end}, ${step})`;
+    code += `${indent}for ${forInfo.variable} in ${rangeStr}:\n`;
 
-        if (this.useHighlighting) {
-            code += `${indent}    highlight('${node.id}')\n`;
-        }
-    } else {
-        // Generate for loop with flowchart-correct range
-        const rangeStr = `range(${forInfo.start}, ${forInfo.end}, ${step})`;
-        code += `${indent}for ${forInfo.variable} in ${rangeStr}:\n`;
-
-        if (this.useHighlighting) {
-            code += `${indent}    highlight('${node.id}')\n`;
-        }
+    if (this.useHighlighting) {
+        code += `${indent}    highlight('${node.id}')\n`;
     }
 
     // -------------------------------
