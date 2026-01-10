@@ -226,7 +226,7 @@ class FlowchartCompiler {
         optimized = this.mergeSequentialAssignments(optimized);
         optimized = this.simplifyNestedConditionals(optimized);
         optimized = this.removeRedundantElse(optimized);
-        optimized = this.consolidatePrintStatements(optimized);
+        //optimized = this.consolidatePrintStatements(optimized);
 
         return optimized;
     }
@@ -469,10 +469,10 @@ class FlowchartCompiler {
         let optimized = code;
 
         // Apply state management optimizations
-        optimized = this.optimizeVariableInitialization(optimized);
+        //optimized = this.optimizeVariableInitialization(optimized);
         optimized = this.consolidateVariableUpdates(optimized);
         optimized = this.optimizeVariableScope(optimized);
-        optimized = this.detectStateConflicts(optimized);
+       // optimized = this.detectStateConflicts(optimized);
 
         return optimized;
     }
@@ -4101,5 +4101,6 @@ hasExitPath(startId, loopHeaderId, visited = new Set()) {
 
 // Export for use in the application
 window.FlowchartCompiler = FlowchartCompiler;
+
 
 
