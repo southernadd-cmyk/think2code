@@ -1425,10 +1425,43 @@ setTimeout(() => {
 }
 
     else {
+        // Process nodes: allow switching between single-line and multi-line
+        const isMultiLine = (node.text ?? "").includes('\n');
         body.innerHTML = `
-            <label class="small fw-bold">Code Text</label>
-            <input id="edit-generic-text" class="form-control" value="${node.text ?? ""}">
+            <label class="small fw-bold mb-1">Code to execute</label>
+            <div class="mb-2">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="multiline-toggle" ${isMultiLine ? 'checked' : ''}>
+                    <label class="form-check-label small" for="multiline-toggle">
+                        Multi-line code
+                    </label>
+                </div>
+            </div>
+            <div id="code-input-container">
+                ${isMultiLine ?
+                    `<textarea id="edit-generic-text" class="form-control" rows="6" style="font-family: monospace; font-size: 0.9em;">${escHTML(node.text ?? "")}</textarea>` :
+                    `<input id="edit-generic-text" class="form-control" value="${escHTML(node.text ?? "")}">`
+                }
+            </div>
         `;
+
+        // Add toggle functionality
+        setTimeout(() => {
+            const toggle = document.getElementById('multiline-toggle');
+            const container = document.getElementById('code-input-container');
+            const currentText = node.text ?? "";
+
+            toggle.addEventListener('change', () => {
+                if (toggle.checked) {
+                    // Switch to textarea
+                    container.innerHTML = `<textarea id="edit-generic-text" class="form-control" rows="6" style="font-family: monospace; font-size: 0.9em;">${escHTML(currentText)}</textarea>`;
+                } else {
+                    // Switch to input (convert newlines to spaces for single line)
+                    const singleLine = currentText.replace(/\n/g, ' ');
+                    container.innerHTML = `<input id="edit-generic-text" class="form-control" value="${escHTML(singleLine)}">`;
+                }
+            });
+        }, 0);
     }
 
     new bootstrap.Modal(document.getElementById('editModal')).show();
@@ -1604,6 +1637,7 @@ addDot(parent, cls, portType) {
         };
         input.click();
     },
+
 
     clearCanvas() { 
         if(confirm("Clear all?")) { 

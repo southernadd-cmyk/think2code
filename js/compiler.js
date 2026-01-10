@@ -24,10 +24,850 @@ class FlowchartCompiler {
         this.findBackEdgesAndLoops();  // Step 2: Identify loops
     }
 
+    /**
+     * Phase 3: Post-compilation optimization (safe to add without breaking existing logic)
+     */
+    optimizeGeneratedCode(code) {
+        // Phase 3A: Remove duplicate conditionals
+        let optimized = this.removeDuplicateConditionals(code);
+
+        // Phase 3B: Simplify control flow
+        optimized = this.simplifyControlFlow(optimized);
+
+        // Phase 4: Optimize state management
+        optimized = this.optimizeStateManagement(optimized);
+
+        return optimized;
+    }
+
+    /**
+     * Analyze loop structure and recommend optimal compilation strategy
+     */
+    analyzeLoopStructure(headerId, bodyId, exitId, useNoBranch) {
+        const analysis = {
+            recommendedType: 'simple_while', // default
+            complexity: 'simple',
+            hasMultipleExits: false,
+            hasNestedLoops: false,
+            exitConditionCount: 0
+        };
+
+        // Check if loop body contains break-to-END exits
+        const hasBreakToEnd = this.checkForBreakToEnd(bodyId, headerId);
+
+        // Count decision nodes in loop body (complexity indicator)
+        const bodyDecisions = this.countDecisionsInLoop(bodyId, headerId);
+
+        // Check for nested loops
+        analysis.hasNestedLoops = this.detectNestedLoops(bodyId, headerId);
+
+        // Count potential exit conditions
+        analysis.exitConditionCount = this.countExitConditions(bodyId, headerId);
+
+        // Analyze exit path complexity
+        if (exitId) {
+            const exitComplexity = this.analyzePathComplexity(exitId, headerId);
+            analysis.exitComplexity = exitComplexity;
+        }
+
+        // Decision logic: prioritize explicit loop conditions from flowchart
+        // Only use while_true when there are genuinely problematic structures
+
+        if (!exitId && !hasBreakToEnd) {
+            // No exit condition at all - must be infinite
+            analysis.recommendedType = 'while_true_simple';
+            analysis.complexity = 'simple';
+        } else if (hasBreakToEnd && !exitId && analysis.exitConditionCount > 3) {
+            // Many break-to-end paths without clear loop condition
+            analysis.recommendedType = 'while_true_with_breaks';
+            analysis.complexity = 'complex';
+        } else if (analysis.hasNestedLoops && analysis.exitConditionCount > 4) {
+            // Very complex nested structure with many exit points
+            analysis.recommendedType = 'while_true_with_breaks';
+            analysis.complexity = 'complex';
+        } else {
+            // Use the flowchart's loop condition - it's there for a reason!
+            analysis.recommendedType = 'simple_while';
+            analysis.complexity = 'simple';
+        }
+
+        console.log(`Loop analysis for ${headerId}:`, analysis);
+        return analysis;
+    }
+
+    /**
+     * Count decision nodes within a loop body
+     */
+    countDecisionsInLoop(startId, loopHeaderId, visited = new Set()) {
+        if (!startId || visited.has(startId) || startId === loopHeaderId) return 0;
+
+        visited.add(startId);
+        const node = this.nodes.find(n => n.id === startId);
+        if (!node) return 0;
+
+        let count = node.type === 'decision' ? 1 : 0;
+
+        const successors = this.getSuccessors(startId);
+        for (const succId of successors) {
+            count += this.countDecisionsInLoop(succId, loopHeaderId, new Set([...visited]));
+        }
+
+        return count;
+    }
+
+    /**
+     * Detect if loop body contains nested loops
+     */
+    detectNestedLoops(startId, loopHeaderId, visited = new Set()) {
+        if (!startId || visited.has(startId) || startId === loopHeaderId) return false;
+
+        visited.add(startId);
+        const node = this.nodes.find(n => n.id === startId);
+        if (!node) return false;
+
+        // Check if this node is a loop header (but not the current one)
+        if (this.loopHeaders.has(startId) && startId !== loopHeaderId) {
+            return true;
+        }
+
+        const successors = this.getSuccessors(startId);
+        for (const succId of successors) {
+            if (this.detectNestedLoops(succId, loopHeaderId, new Set([...visited]))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Count potential exit conditions in loop body
+     */
+    countExitConditions(startId, loopHeaderId, visited = new Set()) {
+        if (!startId || visited.has(startId) || startId === loopHeaderId) return 0;
+
+        visited.add(startId);
+        const node = this.nodes.find(n => n.id === startId);
+        if (!node) return 0;
+
+        let count = 0;
+
+        // Count nodes that lead to END (potential exits)
+        if (this.leadsToEnd(startId, loopHeaderId, new Set())) {
+            count++;
+        }
+
+        const successors = this.getSuccessors(startId);
+        for (const succId of successors) {
+            count += this.countExitConditions(succId, loopHeaderId, new Set([...visited]));
+        }
+
+        return count;
+    }
+
+    /**
+     * Check if a path leads to END without returning to loop header
+     */
+    leadsToEnd(startId, loopHeaderId, visited = new Set()) {
+        if (!startId || visited.has(startId) || startId === loopHeaderId) return false;
+
+        visited.add(startId);
+        const node = this.nodes.find(n => n.id === startId);
+        if (!node) return false;
+
+        if (node.type === 'end') return true;
+
+        const successors = this.getSuccessors(startId);
+        for (const succId of successors) {
+            if (this.leadsToEnd(succId, loopHeaderId, new Set([...visited]))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Analyze complexity of a path
+     */
+    analyzePathComplexity(startId, loopHeaderId, visited = new Set()) {
+        if (!startId || visited.has(startId) || startId === loopHeaderId) return 'simple';
+
+        visited.add(startId);
+        const node = this.nodes.find(n => n.id === startId);
+        if (!node) return 'simple';
+
+        let complexity = 'simple';
+        const successors = this.getSuccessors(startId);
+
+        if (successors.length > 1) complexity = 'branching';
+        if (node.type === 'decision') complexity = 'complex';
+
+        for (const succId of successors) {
+            const subComplexity = this.analyzePathComplexity(succId, loopHeaderId, new Set([...visited]));
+            if (subComplexity === 'complex' ||
+                (subComplexity === 'branching' && complexity === 'simple')) {
+                complexity = 'complex';
+            } else if (subComplexity === 'branching' && complexity === 'simple') {
+                complexity = 'branching';
+            }
+        }
+
+        return complexity;
+    }
+
+    /**
+     * Simplify control flow by merging sequential operations and reducing complexity
+     */
+    simplifyControlFlow(code) {
+        let optimized = code;
+
+        // Apply multiple simplification passes
+        optimized = this.mergeSequentialAssignments(optimized);
+        optimized = this.simplifyNestedConditionals(optimized);
+        optimized = this.removeRedundantElse(optimized);
+        optimized = this.consolidatePrintStatements(optimized);
+
+        return optimized;
+    }
+
+    /**
+     * Merge sequential variable assignments that can be combined
+     */
+    mergeSequentialAssignments(code) {
+        const lines = code.split('\n');
+        const result = [];
+        let i = 0;
+
+        while (i < lines.length) {
+            const currentLine = lines[i].trim();
+
+            // Look for patterns like:
+            // x = x + 1
+            // x = x + 1
+            // -> x = x + 2
+
+            if (this.isIncrementStatement(currentLine)) {
+                let totalIncrement = 0;
+                let varName = '';
+                let startIndex = i;
+
+                // Extract variable and increment amount
+                const incrementMatch = currentLine.match(/^(\w+)\s*=\s*\1\s*([+-])\s*(\d+)$/);
+                if (incrementMatch) {
+                    varName = incrementMatch[1];
+                    const operator = incrementMatch[2];
+                    const amount = parseInt(incrementMatch[3]);
+                    totalIncrement = operator === '+' ? amount : -amount;
+                }
+
+                // Look ahead for more increments of the same variable
+                let j = i + 1;
+                while (j < lines.length) {
+                    const nextLine = lines[j].trim();
+                    if (this.isIncrementStatement(nextLine)) {
+                        const nextMatch = nextLine.match(/^(\w+)\s*=\s*\1\s*([+-])\s*(\d+)$/);
+                        if (nextMatch && nextMatch[1] === varName) {
+                            const operator = nextMatch[2];
+                            const amount = parseInt(nextMatch[3]);
+                            totalIncrement += operator === '+' ? amount : -amount;
+                            j++;
+                        } else {
+                            break;
+                        }
+                    } else if (nextLine === '' || nextLine.startsWith('#')) {
+                        // Skip empty lines and comments
+                        j++;
+                    } else {
+                        break;
+                    }
+                }
+
+                // If we found multiple increments, combine them
+                if (j > i + 1 && totalIncrement !== 0) {
+                    const operator = totalIncrement > 0 ? '+' : '-';
+                    const amount = Math.abs(totalIncrement);
+                    const indent = lines[i].match(/^(\s*)/)[1];
+                    result.push(`${indent}${varName} = ${varName} ${operator} ${amount}`);
+                    i = j;
+                    continue;
+                }
+            }
+
+            result.push(lines[i]);
+            i++;
+        }
+
+        return result.join('\n');
+    }
+
+    /**
+     * Check if a line is a variable increment/decrement statement
+     */
+    isIncrementStatement(line) {
+        return /^(\w+)\s*=\s*\1\s*[+-]\s*\d+$/.test(line.trim());
+    }
+
+    /**
+     * Simplify unnecessarily nested conditional structures
+     */
+    simplifyNestedConditionals(code) {
+        const lines = code.split('\n');
+        const result = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Look for patterns like:
+            // if condition:
+            //     if same_condition:
+            //         code
+            // -> if condition:
+            //     code
+
+            if (trimmed.startsWith('if ')) {
+                const conditionMatch = trimmed.match(/^if\s+(.+):$/);
+                if (conditionMatch) {
+                    const condition = conditionMatch[1];
+
+                    // Check if next line is indented and another if with same condition
+                    if (i + 1 < lines.length) {
+                        const nextLine = lines[i + 1];
+                        const nextTrimmed = nextLine.trim();
+                        const nextIndent = nextLine.length - nextTrimmed.length;
+                        const currentIndent = line.length - trimmed.length;
+
+                        if (nextIndent === currentIndent + 4 &&
+                            nextTrimmed.startsWith('if ') &&
+                            nextTrimmed.includes(condition)) {
+
+                            // Check if the nested if has a simple body that can be merged
+                            let nestedBodyStart = i + 2;
+                            let nestedBodyEnd = nestedBodyStart;
+
+                            // Find the end of the nested if body
+                            while (nestedBodyEnd < lines.length) {
+                                const bodyLine = lines[nestedBodyEnd];
+                                const bodyIndent = bodyLine.length - bodyLine.trimStart().length;
+
+                                if (bodyIndent <= currentIndent) break;
+                                if (bodyIndent <= nextIndent) break;
+
+                                nestedBodyEnd++;
+                            }
+
+                            // If the nested body is simple (just one statement), merge it
+                            if (nestedBodyEnd === nestedBodyStart + 1) {
+                                result.push(line); // Keep the outer if
+                                // Skip the nested if line
+                                i++;
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            result.push(line);
+        }
+
+        return result.join('\n');
+    }
+
+    /**
+     * Remove else clauses that only contain pass
+     */
+    removeRedundantElse(code) {
+        const lines = code.split('\n');
+        const result = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Look for else: followed by pass at same indent
+            if (trimmed === 'else:') {
+                const indent = line.length - trimmed.length;
+
+                // Check next line
+                if (i + 1 < lines.length) {
+                    const nextLine = lines[i + 1];
+                    const nextTrimmed = nextLine.trim();
+                    const nextIndent = nextLine.length - nextTrimmed.length;
+
+                    if (nextIndent === indent + 4 && nextTrimmed === 'pass') {
+                        // Remove both else: and pass lines
+                        i++; // Skip the pass line too
+                        continue;
+                    }
+                }
+            }
+
+            result.push(line);
+        }
+
+        return result.join('\n');
+    }
+
+    /**
+     * Consolidate consecutive print statements where possible
+     */
+    consolidatePrintStatements(code) {
+        const lines = code.split('\n');
+        const result = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Look for consecutive print statements at same indent level
+            if (trimmed.startsWith('print(')) {
+                const indent = line.length - trimmed.length;
+                let consolidated = trimmed;
+
+                // Check for more print statements at same level
+                let j = i + 1;
+                while (j < lines.length) {
+                    const nextLine = lines[j];
+                    const nextTrimmed = nextLine.trim();
+                    const nextIndent = nextLine.length - nextTrimmed.length;
+
+                    if (nextIndent === indent && nextTrimmed.startsWith('print(')) {
+                        // Combine the prints (simple concatenation for now)
+                        const content1 = trimmed.match(/print\((.+)\)/)?.[1] || '';
+                        const content2 = nextTrimmed.match(/print\((.+)\)/)?.[1] || '';
+
+                        if (content1 && content2) {
+                            consolidated = `print(${content1}; ${content2})`;
+                            j++;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
+                result.push(' '.repeat(indent) + consolidated);
+
+                if (j > i + 1) {
+                    i = j - 1; // Skip the lines we consolidated
+                }
+            } else {
+                result.push(line);
+            }
+        }
+
+        return result.join('\n');
+    }
+
+    /**
+     * Optimize variable state management across loops and control flow
+     */
+    optimizeStateManagement(code) {
+        let optimized = code;
+
+        // Apply state management optimizations
+        optimized = this.optimizeVariableInitialization(optimized);
+        optimized = this.consolidateVariableUpdates(optimized);
+        optimized = this.optimizeVariableScope(optimized);
+        optimized = this.detectStateConflicts(optimized);
+
+        return optimized;
+    }
+
+    /**
+     * Move variable initializations to optimal locations (earliest possible point)
+     */
+    optimizeVariableInitialization(code) {
+        const lines = code.split('\n');
+        const result = [];
+        const initializations = new Map(); // var -> first line where it's used
+        const declarations = new Map(); // var -> line where it's declared
+
+        // First pass: collect variable usage and declarations
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Check for variable declarations/assignments
+            const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                const value = assignMatch[2];
+
+                // Track where variables are first declared
+                if (!declarations.has(varName)) {
+                    declarations.set(varName, i);
+                }
+
+                // Track where variables are used (simplified - look for variable references)
+                const usedVars = this.extractVariablesFromExpression(value);
+                usedVars.forEach(usedVar => {
+                    if (!initializations.has(usedVar)) {
+                        initializations.set(usedVar, i);
+                    }
+                });
+            }
+
+            // Also check for variables used in conditions and other contexts
+            const allVars = this.extractAllVariables(trimmed);
+            allVars.forEach(varName => {
+                if (!initializations.has(varName)) {
+                    initializations.set(varName, i);
+                }
+            });
+        }
+
+        // Second pass: optimize initialization order
+        const processedLines = new Set();
+        const optimizedResult = [];
+
+        for (let i = 0; i < lines.length; i++) {
+            if (processedLines.has(i)) continue;
+
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Check if this is a variable initialization that could be moved earlier
+            const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                const value = assignMatch[2];
+
+                // Check if this initialization only depends on variables that are already initialized
+                const dependencies = this.extractVariablesFromExpression(value);
+                const canMove = dependencies.every(dep =>
+                    declarations.has(dep) && declarations.get(dep) < i
+                );
+
+                if (canMove && dependencies.length > 0) {
+                    // Find the earliest point where all dependencies are available
+                    let earliestPoint = 0;
+                    dependencies.forEach(dep => {
+                        const depLine = declarations.get(dep) || 0;
+                        earliestPoint = Math.max(earliestPoint, depLine + 1);
+                    });
+
+                    // Move this initialization to the earliest possible point
+                    if (earliestPoint < i && earliestPoint >= 0) {
+                        optimizedResult.splice(earliestPoint, 0, line);
+                        processedLines.add(i);
+                        continue;
+                    }
+                }
+            }
+
+            optimizedResult.push(line);
+        }
+
+        return optimizedResult.join('\n');
+    }
+
+    /**
+     * Extract variable names from an expression
+     */
+    extractVariablesFromExpression(expr) {
+        // Simple regex to find variable names (word characters, not starting with digit)
+        const varRegex = /\b[a-zA-Z_]\w*\b/g;
+        const matches = expr.match(varRegex) || [];
+
+        // Filter out Python keywords and built-ins
+        const keywords = new Set(['and', 'or', 'not', 'if', 'else', 'elif', 'for', 'while', 'def', 'class', 'import', 'from', 'True', 'False', 'None', 'print', 'input', 'int', 'str', 'len', 'range']);
+        return matches.filter(match => !keywords.has(match));
+    }
+
+    /**
+     * Extract all variable names from a line of code
+     */
+    extractAllVariables(line) {
+        return this.extractVariablesFromExpression(line);
+    }
+
+    /**
+     * Consolidate multiple updates to the same variable
+     */
+    consolidateVariableUpdates(code) {
+        const lines = code.split('\n');
+        const result = [];
+        const varUpdates = new Map(); // var -> {lines: [], operations: []}
+
+        // First pass: collect variable updates
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Look for variable assignments
+            const assignMatch = trimmed.match(/^(\w+)\s*([+\-*/]?=)\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                const operator = assignMatch[2];
+                const value = assignMatch[3];
+
+                if (!varUpdates.has(varName)) {
+                    varUpdates.set(varName, { lines: [], operations: [] });
+                }
+
+                varUpdates.get(varName).lines.push(i);
+                varUpdates.get(varName).operations.push({ operator, value, line });
+            }
+        }
+
+        // Second pass: consolidate where possible
+        const processedLines = new Set();
+
+        for (let i = 0; i < lines.length; i++) {
+            if (processedLines.has(i)) continue;
+
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            const assignMatch = trimmed.match(/^(\w+)\s*([+\-*/]?=)\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                const updates = varUpdates.get(varName);
+
+                if (updates && updates.lines.length > 1) {
+                    // Check if consecutive updates can be consolidated
+                    const consecutiveUpdates = [];
+                    let j = 0;
+
+                    while (j < updates.lines.length && updates.lines[j] >= i) {
+                        const updateIndex = updates.lines[j];
+                        if (updateIndex === i + consecutiveUpdates.length) {
+                            consecutiveUpdates.push(updates.operations[j]);
+                        } else {
+                            break;
+                        }
+                        j++;
+                    }
+
+                    // If we have consecutive simple increments/decrements, consolidate
+                    if (consecutiveUpdates.length > 1) {
+                        let consolidatedValue = '';
+                        const firstOp = consecutiveUpdates[0];
+
+                        if (firstOp.operator === '+=' || firstOp.operator === '-=') {
+                            // Simple case: x += 1; x += 1 -> x += 2
+                            let total = 0;
+                            let allValid = true;
+
+                            for (const op of consecutiveUpdates) {
+                                if (op.operator === '+=') {
+                                    const num = parseInt(op.value);
+                                    if (!isNaN(num)) total += num;
+                                    else allValid = false;
+                                } else if (op.operator === '-=') {
+                                    const num = parseInt(op.value);
+                                    if (!isNaN(num)) total -= num;
+                                    else allValid = false;
+                                } else {
+                                    allValid = false;
+                                }
+                            }
+
+                            if (allValid && total !== 0) {
+                                const operator = total > 0 ? '+=' : '-=';
+                                const amount = Math.abs(total);
+                                const indent = line.match(/^(\s*)/)[1];
+                                result.push(`${indent}${varName} ${operator} ${amount}`);
+
+                                // Mark all consolidated lines as processed
+                                for (let k = 0; k < consecutiveUpdates.length; k++) {
+                                    processedLines.add(i + k);
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
+
+            result.push(line);
+        }
+
+        return result.join('\n');
+    }
+
+    /**
+     * Optimize variable scope by minimizing lifetime where possible
+     */
+    optimizeVariableScope(code) {
+        // This is a complex optimization that would require deeper analysis
+        // For now, implement a simple version that moves variable declarations
+        // closer to their first use when safe to do so
+
+        const lines = code.split('\n');
+        const result = [];
+        const varFirstUse = new Map();
+        const varDeclarations = new Map();
+
+        // Find first use and declarations
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Track declarations
+            const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                varDeclarations.set(varName, i);
+            }
+
+            // Track first use
+            const vars = this.extractAllVariables(trimmed);
+            vars.forEach(varName => {
+                if (!varFirstUse.has(varName)) {
+                    varFirstUse.set(varName, i);
+                }
+            });
+        }
+
+        // Move declarations closer to first use (simplified version)
+        const processedLines = new Set();
+
+        for (let i = 0; i < lines.length; i++) {
+            if (processedLines.has(i)) continue;
+
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            const assignMatch = trimmed.match(/^(\w+)\s*=\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                const firstUse = varFirstUse.get(varName);
+                const declaration = varDeclarations.get(varName);
+
+                // If variable is declared much earlier than first use, consider moving it
+                if (firstUse && declaration && firstUse > declaration + 2) {
+                    // Check if it's safe to move (no other vars depend on it being declared early)
+                    const dependencies = this.extractVariablesFromExpression(assignMatch[2]);
+                    const canMove = dependencies.every(dep => varDeclarations.get(dep) < declaration);
+
+                    if (canMove) {
+                        // Move declaration to just before first use
+                        const insertPoint = Math.max(declaration + 1, firstUse - 1);
+                        if (insertPoint < i) {
+                            result.splice(insertPoint, 0, line);
+                            processedLines.add(i);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            result.push(line);
+        }
+
+        return result.length > 0 ? result.join('\n') : code;
+    }
+
+    /**
+     * Detect potential state conflicts (variables used in conflicting ways)
+     */
+    detectStateConflicts(code) {
+        // This would analyze for potential issues like:
+        // - Variables modified in nested loops that might cause unexpected behavior
+        // - Shared state that could lead to race conditions (in concurrent contexts)
+        // - Variables that are reassigned in ways that might confuse the logic
+
+        const lines = code.split('\n');
+        const warnings = [];
+
+        // Simple check: look for variables that are modified in ways that might indicate conflicts
+        const varModifications = new Map();
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Track variable modifications
+            const assignMatch = trimmed.match(/^(\w+)\s*[+\-*/]?=\s*(.+)$/);
+            if (assignMatch) {
+                const varName = assignMatch[1];
+                if (!varModifications.has(varName)) {
+                    varModifications.set(varName, []);
+                }
+                varModifications.get(varName).push({
+                    line: i,
+                    type: assignMatch[0].includes('+') ? 'increment' :
+                          assignMatch[0].includes('-') ? 'decrement' : 'assignment'
+                });
+            }
+        }
+
+        // Check for potentially problematic patterns
+        for (const [varName, modifications] of varModifications) {
+            if (modifications.length > 3) {
+                // Variable modified many times - might be a state management issue
+                warnings.push(`Variable '${varName}' is modified ${modifications.length} times - consider simplifying state management`);
+            }
+        }
+
+        // Add warnings as comments in the code
+        if (warnings.length > 0) {
+            const warningLines = warnings.map(w => `# WARNING: ${w}`);
+            return warningLines.join('\n') + '\n' + code;
+        }
+
+        return code;
+    }
+
+    /**
+     * Remove duplicate conditional blocks that check the same condition
+     */
+    removeDuplicateConditionals(code) {
+        const lines = code.split('\n');
+        const seenConditions = new Set();
+        const result = [];
+        let skipBlock = false;
+        let indentLevel = 0;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const trimmed = line.trim();
+
+            // Track indent level
+            const currentIndent = line.length - line.trimStart().length;
+
+            // Check for conditional statements
+            const conditionMatch = trimmed.match(/^(if|elif)\s+(.+):$/);
+            if (conditionMatch) {
+                const condition = conditionMatch[2];
+                const conditionKey = `${conditionMatch[1]}:${condition}`;
+
+                if (seenConditions.has(conditionKey)) {
+                    // Skip this duplicate conditional block
+                    skipBlock = true;
+                    continue;
+                } else {
+                    seenConditions.add(conditionKey);
+                    skipBlock = false;
+                }
+            }
+
+            // Skip block content if we're in a duplicate
+            if (skipBlock && currentIndent > indentLevel) {
+                continue;
+            }
+
+            // Reset skip when we return to original indent level
+            if (!skipBlock && currentIndent <= indentLevel) {
+                skipBlock = false;
+            }
+
+            result.push(line);
+            indentLevel = currentIndent;
+        }
+
+        return result.join('\n');
+    }
+
 
     normalizeGraph() {
         this.buildMaps();
-
+    
         // CRITICAL: loop analysis must match the edited graph
         this.computeDominators();
         this.findBackEdgesAndLoops();
@@ -158,7 +998,7 @@ const dfs = (nodeId) => {
 
             // Ignore if the TARGET (loop header) is a decision
             if (toNode.type === "decision") continue;
-
+            
             // Ignore if target is part of a decision-controlled loop
             if (decisionLoopNodes.has(target)) continue;
 
@@ -596,7 +1436,7 @@ canReach(startId, targetId, avoidSet = new Set()) {
     
         return visited;
     }
-    
+                    
     /**
      * Main compilation entry point
      */
@@ -649,6 +1489,9 @@ canReach(startId, targetId, avoidSet = new Set()) {
             code += `highlight('${endNode.id}')\n`;
         }
     }
+
+    // Phase 3: Post-compilation optimization
+    code = this.optimizeGeneratedCode(code);
     
     return code;
 }
@@ -747,7 +1590,7 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
             console.log(`Skipping already visited node: ${nodeId}`);
             return "";
         }
-        visitedInPath.add(nodeId);
+            visitedInPath.add(nodeId);
     
         // ===========================
         // skip for-loop init nodes
@@ -896,7 +1739,15 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
             case "process":
             case "var":
             case "list":
-                if (node.text) code += `${indent}${node.text}\n`;
+                if (node.text) {
+                    // Handle multi-line text by indenting each line properly
+                    const lines = node.text.split('\n');
+                    for (const line of lines) {
+                        if (line.trim()) { // Skip empty lines
+                            code += `${indent}${line}\n`;
+                        }
+                    }
+                }
                 break;
     
             case "start":
@@ -1173,7 +2024,7 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
 
     const yesId = this.getSuccessor(node.id, 'yes');
     const noId = this.getSuccessor(node.id, 'no');
-
+    
     console.log(`=== compileDecision(${node.id}: ${node.text}) ===`);
     console.log(`yesId: ${yesId}, noId: ${noId}`);
     console.log(`isSimpleWhileLoop: ${this.isSimpleWhileLoop(node.id)}`);
@@ -1260,7 +2111,7 @@ compileDecision(node, visitedInPath, contextStack, indentLevel, inLoopBody, inLo
 isSimpleWhileLoop(decisionId) {
     const yesId = this.getSuccessor(decisionId, 'yes');
     const noId = this.getSuccessor(decisionId, 'no');
-
+    
     // Avoid loop header decisions to prevent false positives from complex control flow
     const avoidSet = new Set(this.loopHeaders);
 
@@ -1804,14 +2655,32 @@ return code;
 // 2) OTHERWISE → WHILE LOOP
 // -------------------------------
 
-// Check if loop body contains any break-to-END exits
-const hasBreakToEnd = this.checkForBreakToEnd(loopBodyId, node.id);
+// Analyze loop structure and choose optimal compilation strategy
+const loopAnalysis = this.analyzeLoopStructure(node.id, loopBodyId, exitId, useNoBranch);
+const loopType = loopAnalysis.recommendedType;
 
 let condition = node.text;
 if (useNoBranch) condition = `not (${condition})`;
 
-if (hasBreakToEnd && exitId) {
+if (loopType === 'while_true_with_breaks') {
     // Use while True with condition check (more robust than while-else for breaks)
+    code += `${indent}while True:\n`;
+    
+    if (this.useHighlighting) {
+        code += `${indent}    highlight('${node.id}')\n`;
+    }
+    
+    const whileCtx = [...contextStack, `loop_${node.id}`];
+    const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
+    code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
+    
+    // Check exit condition
+    code += `${indent}    if not (${condition}):\n`;
+    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 2, false, false);
+    code += exitCode || `${indent}        pass\n`;
+    code += `${indent}        break\n`;
+} else if (loopType === 'while_true_simple') {
+    // Simple infinite loop
     code += `${indent}while True:\n`;
 
     if (this.useHighlighting) {
@@ -1821,12 +2690,6 @@ if (hasBreakToEnd && exitId) {
     const whileCtx = [...contextStack, `loop_${node.id}`];
     const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
     code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
-
-    // Check exit condition
-    code += `${indent}    if not (${condition}):\n`;
-    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 2, false, false);
-    code += exitCode || `${indent}        pass\n`;
-    code += `${indent}        break\n`;
 } else {
     // Regular while without else
     code += `${indent}while ${condition}:\n`;
@@ -2030,9 +2893,9 @@ if (alternativePaths.length > 0) {
 
     if (validAlternatives.length !== alternativePaths.length) {
         // Some paths skip increment without exiting - not a valid for-loop
-        this.forPatternInProgress.delete(decisionId);
-        this.forPatternCache.set(decisionId, null);
-        return null;
+    this.forPatternInProgress.delete(decisionId);
+    this.forPatternCache.set(decisionId, null);
+    return null;
     }
     // All alternative paths exit the loop, so they're valid for nested loops
 }
@@ -2203,7 +3066,7 @@ findAlternativePathsWithinLoopBody(startId, targetId, mustIncludeId, exitId, vis
         const paths = this.findAlternativePathsWithinLoopBody(edge.targetId, targetId, mustIncludeId, exitId, new Set([...visited]), newPath);
         alternatives.push(...paths);
     }
-
+    
     return alternatives;
 }
 
@@ -2552,8 +3415,8 @@ findCommonConvergencePoint(decisionId, yesId, noId) {
         const results = new Set();
         if (!startId || visited.has(startId) || depth > 8) return results;
         visited.add(startId);
-
-        const node = this.nodes.find(n => n.id === startId);
+    
+    const node = this.nodes.find(n => n.id === startId);
         if (!node) return results;
 
         // Collect non-decision nodes
@@ -2599,14 +3462,14 @@ findCommonConvergencePoint(decisionId, yesId, noId) {
     }
 
     // If no direct common target, check if NO branch is another decision (elif chain)
-    const noNode = this.nodes.find(n => n.id === noId);
-    if (noNode && noNode.type === 'decision') {
-        // Recursively check the elif chain
-        const noYesId = this.getSuccessor(noId, 'yes');
-        const noNoId = this.getSuccessor(noId, 'no');
-        return this.findCommonConvergencePoint(noId, noYesId, noNoId);
+        const noNode = this.nodes.find(n => n.id === noId);
+        if (noNode && noNode.type === 'decision') {
+            // Recursively check the elif chain
+            const noYesId = this.getSuccessor(noId, 'yes');
+            const noNoId = this.getSuccessor(noId, 'no');
+            return this.findCommonConvergencePoint(noId, noYesId, noNoId);
     }
-
+    
     return null;
 }
 
@@ -2665,7 +3528,7 @@ if (n && n.type === "decision" && this.isLoopHeader(startId)) {
     // Check if we're in an implicit loop context
     const inImplicitLoop = contextStack.some(ctx => ctx.startsWith('implicit_'));
     if (!inImplicitLoop) {
-        return "";
+    return "";
     }
     // In implicit loops, allow the loop header to be compiled as a regular decision
 }
@@ -2678,8 +3541,8 @@ if (n && n.type === "decision" && this.isLoopHeader(startId)) {
 
     
 // Prevent infinite recursion
-if (visitedInPath.has(startId)) return "";
-visitedInPath.add(startId);
+    if (visitedInPath.has(startId)) return "";
+    visitedInPath.add(startId);
 
 
     
@@ -2707,7 +3570,15 @@ visitedInPath.add(startId);
         case "process":
         case "var":
         case "list":
-            if (node.text) code += `${indent}${node.text}\n`;
+            if (node.text) {
+                // Handle multi-line text by indenting each line properly
+                const lines = node.text.split('\n');
+                for (const line of lines) {
+                    if (line.trim()) { // Skip empty lines
+                        code += `${indent}${line}\n`;
+                    }
+                }
+            }
             break;
             case "decision":
                 // Decisions inside a "compile until convergence" segment must compile as a full decision
@@ -3135,15 +4006,15 @@ elseCode = this.compileNodeUntil(
 // AFTER the if / elif / else chain:
 // Compile the convergence point
 if (convergencePoint) {
-    if (!code.endsWith("\n")) code += "\n";
-    code += this.compileNode(
-        convergencePoint,
-        visitedInPath,
-        contextStack,
-        indentLevel,
-        inLoopBody,
-        inLoopHeader
-    );
+        if (!code.endsWith("\n")) code += "\n";
+        code += this.compileNode(
+            convergencePoint,
+            visitedInPath,
+            contextStack,
+            indentLevel,
+            inLoopBody,
+            inLoopHeader
+        );
 }
 
     
@@ -3196,7 +4067,7 @@ compileElifChain(elifNode, visitedInPath, contextStack, indentLevel ,inLoopBody,
 
         break;
     }
-
+    
     return code;
 }
 
@@ -3226,7 +4097,9 @@ hasExitPath(startId, loopHeaderId, visited = new Set()) {
     return false;
 }
 
-
 }
+
+// Export for use in the application
+window.FlowchartCompiler = FlowchartCompiler;
 
 
