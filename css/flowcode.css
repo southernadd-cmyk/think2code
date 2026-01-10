@@ -303,6 +303,11 @@
     font-weight: 500;
 }
 
+/* Connection Selection Styling */
+.selected-connection {
+    filter: drop-shadow(0 0 6px rgba(255, 107, 53, 0.8));
+}
+
 /* Enhanced UI Elements */
 .zoombox {
     background: rgba(255, 255, 255, 0.95);
