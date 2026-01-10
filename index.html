@@ -175,73 +175,113 @@
     <div class="welcome-content">
         <!-- Brand Header -->
         <header class="welcome-header">
-            <br/><br/>
-<h1 class="headerfont display-4">
-  <span class="fa-stack fa-lg me-2" aria-hidden="true">
-    <i class="fa-solid fa-brain fa-stack-2x brain-icon"></i>
-    <i class="fa-brands fa-python fa-stack-1x python-icon"></i>
-  </span></i><br/>Think2Code <small class="text-muted">beta</small>
-</h1>
-<p class="tagline">Logic → Flowcharts → Python</p>
-
+            <div class="welcome-logo">
+                <div class="logo-stack">
+                    <i class="fa-solid fa-brain brain-icon"></i>
+                    <i class="fa-brands fa-python python-icon"></i>
+                </div>
+                <h1 class="headerfont display-3">
+                    Think2Cod<span class="e-with-beta">e<div class="beta-badge">beta</div></span>
+                </h1>
+            </div>
+            <p class="tagline">Visual Programming Made Simple</p>
+            <p class="subtitle">Logic → Flowcharts → Python Code</p>
         </header>
 
-        <button id="welcomeCloseBtn" class="btn btn-primary btn-lg px-5 fw-bold shadow">
-            Start Coding <i class="fa-solid fa-chevron-right ms-2"></i>
-        </button>
-        <hr/>
+        <!-- Main CTA Button -->
+        <div class="cta-section">
+            <button id="welcomeCloseBtn" class="btn btn-primary btn-xl px-5 py-3 fw-bold shadow-lg">
+                <i class="fa-solid fa-rocket me-2"></i>
+                Start Creating
+                <i class="fa-solid fa-arrow-right ms-2"></i>
+            </button>
+            <p class="cta-subtitle">No account required • Works offline • Free forever</p>
+        </div>
+
         <!-- Features Grid -->
         <div class="welcome-grid">
             <div class="feature-card">
-                <i class="fa-solid fa-gears"></i>
-                <h6>Build</h6>
-                <p>Drag blocks to create logic. Use Variables, Input/Output, Decisions, and Loops.</p>
+                <div class="feature-icon">
+                    <i class="fa-solid fa-diagram-project"></i>
+                </div>
+                <h5>Visual Logic</h5>
+                <p>Build algorithms visually with drag-and-drop flowchart blocks. No syntax errors, just pure logic.</p>
             </div>
             <div class="feature-card">
-                <i class="fa-solid fa-play"></i>
-                <h6>Simulate</h6>
-                <p>Watch your flowchart execute step-by-step with real-time variable tracking.</p>
+                <div class="feature-icon">
+                    <i class="fa-solid fa-play-circle"></i>
+                </div>
+                <h5>Live Execution</h5>
+                <p>Watch your flowchart run in real-time with step-by-step highlighting and variable tracking.</p>
             </div>
             <div class="feature-card">
-                <i class="fa-brands fa-python"></i>
-                <h6>Code</h6>
-                <p>Instantly see and export real Python code from your diagram.</p>
+                <div class="feature-icon">
+                    <i class="fa-brands fa-python"></i>
+                </div>
+                <h5>Python Export</h5>
+                <p>Generate clean, readable Python code instantly. Learn programming through visual thinking.</p>
             </div>
         </div>
 
-        <!-- Instructions Section -->
-        <div class="welcome-instructions">
-            <div class="row g-4">
-                <div class="col-md-6">
-                    <h5 class="fw-bold mb-3"><i class="fa-solid fa-graduation-cap me-2 text-primary"></i>Quick Start</h5>
-                    <ul class="list-unstyled">
-                        <li><i class="fa-solid fa-circle-check me-2 text-success"></i>Join blocks using the small circles</li>
-                        <li><i class="fa-solid fa-circle-check me-2 text-success"></i>Double-click any block to edit its logic</li>
-                        <li><i class="fa-solid fa-circle-check me-2 text-success"></i>Press RUN to see the flowchart in action</li>
-                    </ul>
+        <!-- Quick Tips Section -->
+        <div class="welcome-tips">
+            <h4 class="tips-title"><i class="fa-solid fa-lightbulb me-2"></i>Quick Start Guide</h4>
+            <div class="tips-grid">
+                <div class="tip-item">
+                    <div class="tip-number">1</div>
+                    <div class="tip-content">
+                        <h6>Build Your Logic</h6>
+                        <p>Drag blocks from the palette and connect them with lines</p>
+                    </div>
                 </div>
-                <div class="col-md-6 border-start-md">
-                    <h5 class="fw-bold mb-3"><i class="fa-solid fa-shield-halved me-2 text-primary"></i>Privacy & Safety</h5>
-                    <p class="small mb-0">Think2Code runs 100% in your browser. No data is ever uploaded to a server. Your work stays on your device.</p>
-                    <a href="think2code_teacher_guide.pdf" target="_blank" class="btn btn-link btn-sm p-0 mt-2 text-decoration-none fw-bold">
-                        Download Teacher's Guide <i class="fa-solid fa-arrow-right-long ms-1"></i>
-                    </a>
-
+                <div class="tip-item">
+                    <div class="tip-number">2</div>
+                    <div class="tip-content">
+                        <h6>Edit Block Content</h6>
+                        <p>Double-click any block to customize its logic and values</p>
+                    </div>
+                </div>
+                <div class="tip-item">
+                    <div class="tip-number">3</div>
+                    <div class="tip-content">
+                        <h6>Run & Debug</h6>
+                        <p>Hit RUN to execute and see your code come to life</p>
+                    </div>
                 </div>
             </div>
         </div>
 
         <!-- Footer / Action Area -->
         <div class="welcome-footer">
-            <p>
-                This work is licensed under <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/">CC BY-NC-SA 4.0</a><img src="https://mirrors.creativecommons.org/presskit/icons/cc.svg" alt="" style="max-width: 1em;max-height:1em;margin-left: .2em;"><img src="https://mirrors.creativecommons.org/presskit/icons/by.svg" alt="" style="max-width: 1em;max-height:1em;margin-left: .2em;"><img src="https://mirrors.creativecommons.org/presskit/icons/nc.svg" alt="" style="max-width: 1em;max-height:1em;margin-left: .2em;"><img src="https://mirrors.creativecommons.org/presskit/icons/sa.svg" alt="" style="max-width: 1em;max-height:1em;margin-left: .2em;"></p>
-            <div class="form-check mb-3">
-                <input class="form-check-input" type="checkbox" id="dontShowAgainCheck">
-                <label class="form-check-label small" for="dontShowAgainCheck">
-                    Don’t show this screen again
-                </label>
-            </div>
+            <div class="footer-content">
+                <div class="footer-links">
+                    <a href="think2code_teacher_guide.pdf" target="_blank" class="footer-link">
+                        <i class="fa-solid fa-book me-2"></i>
+                        Teacher's Guide
+                    </a>
+                    <a href="https://github.com/southernadd/think2code" target="_blank" class="footer-link">
+                        <i class="fa-brands fa-github me-2"></i>
+                        Source Code
+                    </a>
+                </div>
 
+                <div class="license-info">
+                    <p class="license-text">
+                        <i class="fa-solid fa-shield-halved me-2"></i>
+                        100% Private • Browser-Based • No Data Collection
+                    </p>
+                    <p class="license-link">
+                        Licensed under <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" target="_blank">CC BY-NC-SA 4.0</a>
+                    </p>
+                </div>
+
+                <div class="form-check dont-show-check">
+                    <input class="form-check-input" type="checkbox" id="dontShowAgainCheck">
+                    <label class="form-check-label" for="dontShowAgainCheck">
+                        Don't show this welcome screen again
+                    </label>
+                </div>
+            </div>
         </div>
     </div>
 </div>
