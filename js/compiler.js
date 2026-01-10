@@ -3679,6 +3679,18 @@ compileElifChainUntil(elifNode, convergencePoint, visitedInPath, contextStack, i
  * Compile if/else statement with support for elif
  */
 /**
+ * Find the current loop header from context stack
+ */
+findCurrentLoopHeader(contextStack) {
+    for (const ctx of contextStack) {
+        if (ctx.startsWith('loop_')) {
+            return ctx.replace('loop_', '');
+        }
+    }
+    return null;
+}
+
+/**
  * Check if decisions form a linear chain (for elif)
  * Linear chain: decision -> NO branch -> another decision -> NO branch -> ...
  * Not linear: decision -> YES branch is also a decision (nested)
