@@ -25,7 +25,7 @@
       "type": "var",
       "x": 393,
       "y": 127,
-      "text": "app = \"Think2Learn\"",
+      "text": "app = \"Think2Code\"",
       "varName": "x",
       "prompt": "Enter value",
       "dtype": "int"
