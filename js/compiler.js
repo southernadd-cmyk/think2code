@@ -2956,8 +2956,8 @@ if (directEndExits.length > 0) {
         finalStep = Math.abs(step);
 
         if (comparisonOp === '<') {
-            // For flowchart logic: x < N should end with x = N
-            finalEnd = `(${endValue}) + 1`;
+            // For x < N, range goes to N (bounds-safe)
+            finalEnd = endValue;
         } else if (comparisonOp === '<=') {
             // For x <= N, range goes to N+1
             finalEnd = `(${endValue}) + 1`;
