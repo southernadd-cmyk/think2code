@@ -2941,12 +2941,17 @@ if (directEndExits.length > 0) {
         // force negative step
         finalStep = -Math.abs(step);
 
+        // Smart adjustment logic: only for literal integers to avoid IndexError
+        const isLiteralInteger = /^\d+$/.test(endValue.trim());
+
         if (comparisonOp === '>') {
-            // For x > N, range goes to N (exclusive)
-            finalEnd = endValue;
+            // For literal integers: subtract 1 for exact flowchart logic (x > 0 -> range(10, -1, -1))
+            // For variables: keep bounds-safe to prevent IndexError
+            finalEnd = isLiteralInteger ? `(${endValue}) - 1` : endValue;
         } else if (comparisonOp === '>=') {
-            // For x >= N, range goes to N-1 (exclusive)
-            finalEnd = `${parseInt(endValue) - 1}`;
+            // For literal integers: subtract 2 for exact flowchart logic (x >= 1 -> range(10, -1, -1))
+            // For variables: subtract 1 (bounds-safe)
+            finalEnd = isLiteralInteger ? `(${endValue}) - 2` : `(${endValue}) - 1`;
         } else {
             finalEnd = endValue;
         }
