@@ -1608,34 +1608,7 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         // skip nodes marked in nodesToSkip
         // ===========================
         if (this.nodesToSkip && this.nodesToSkip.has(nodeId)) {
-            // if it's the synthetic loop header → handle exit/body routing
-            if (nodeId === this.loopHeaderId) {
-                // ... existing code ...
-            }
-            
-            // For ANY node in the skip set (including increment nodes),
-            // we should NOT compile its successors if we're in a for-loop context
-            const node = this.getNode(nodeId);
-            if (node && (node.type === "process" || node.type === "var")) {
-                // Check if this looks like an increment statement (i = i + 1, etc.)
-                const isIncrement = node.text && (
-                    node.text.includes(" = ") && 
-                    (node.text.includes(" + 1") || node.text.includes(" += 1") ||
-                     node.text.includes(" - 1") || node.text.includes(" -= 1"))
-                );
-                
-                if (isIncrement) {
-                    // Don't compile successors for increment nodes in for-loops
-                    console.log(`Skipping increment node ${nodeId} and NOT compiling successors`);
-                    return code;
-                }
-            }
-            
-            // otherwise: transparent skip
-            const succ = this.getAllSuccessors(nodeId);
-            for (const { nodeId: nxt } of succ) {
-                code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
-            }
+            // transparent skip - don't compile this node or its successors
             return code;
         }
     
@@ -2701,10 +2674,12 @@ if (loopType === 'while_true_with_breaks') {
     const whileCtx = [...contextStack, `loop_${node.id}`];
     const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
     code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
-    
-    // exit path after while (executes even after break)
+
+    // exit path in while-else (only executes when loop exits naturally)
     if (exitId) {
-        code += this.compileNode(exitId, visitedInPath, contextStack, indentLevel, false, false);
+        code += `${indent}else:\n`;
+        const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 1, false, false);
+        code += exitCode || `${indent}    pass\n`;
     }
 }
 
@@ -3905,6 +3880,12 @@ if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
             inLoopBody,
             inLoopHeader
         );
+
+        // Add break if this branch leads to END (exits the loop)
+        if (inLoopBody && this.reachesEndWithoutReturningToHeader(yesId, this.findCurrentLoopHeader(contextStack))) {
+            if (!ifCode.endsWith("\n")) ifCode += "\n";
+            ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+        }
     }
     
     
@@ -4101,6 +4082,5 @@ hasExitPath(startId, loopHeaderId, visited = new Set()) {
 
 // Export for use in the application
 window.FlowchartCompiler = FlowchartCompiler;
-
 
 
