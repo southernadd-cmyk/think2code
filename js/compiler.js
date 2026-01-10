@@ -2477,14 +2477,23 @@ if (forInfo) {
     this.loopHeaderId = node.id;
 
     // -------------------------------
+    // Detect if loop variable is used for array indexing
+    // -------------------------------
+    const usesArrayIndexing = this.detectArrayIndexing(forInfo.variable);
+
+    // -------------------------------
     // create a local skip set
     // -------------------------------
     const savedSkip = this.nodesToSkip;
     const localSkips = new Set();
 
-    // skip increment statement always
-    if (forInfo.incrementNodeId) {
-        localSkips.add(forInfo.incrementNodeId);
+    // For while loops, don't skip increment - it should execute
+    // For for loops, skip increment as it's implicit in range
+    if (!usesArrayIndexing) {
+        // For for loops, skip increment as it's implicit in range
+        if (forInfo.incrementNodeId) {
+            localSkips.add(forInfo.incrementNodeId);
+        }
     }
     // In compileLoop, inside the forInfo block:
 // Find ALL nodes that look like increments for this variable
@@ -2514,19 +2523,29 @@ for (const n of this.nodes) {
     this.nodesToSkip = localSkips;
 
     // -------------------------------
-    // build Python for-range()
+    // Choose loop type based on usage
     // -------------------------------
     let step = forInfo.step;
     if (!step) {
         step = (parseInt(forInfo.start) <= parseInt(forInfo.end)) ? 1 : -1;
     }
 
-    const rangeStr = `range(${forInfo.start}, ${forInfo.end}, ${step})`;
+    if (usesArrayIndexing) {
+        // Generate while loop for exact flowchart equivalence
+        code += `${indent}${forInfo.variable} = ${forInfo.start}\n`;
+        code += `${indent}while ${node.text}:\n`;
 
-    code += `${indent}for ${forInfo.variable} in ${rangeStr}:\n`;
+        if (this.useHighlighting) {
+            code += `${indent}    highlight('${node.id}')\n`;
+        }
+    } else {
+        // Generate for loop with flowchart-correct range
+        const rangeStr = `range(${forInfo.start}, ${forInfo.end}, ${step})`;
+        code += `${indent}for ${forInfo.variable} in ${rangeStr}:\n`;
 
-    if (this.useHighlighting) {
-        code += `${indent}    highlight('${node.id}')\n`;
+        if (this.useHighlighting) {
+            code += `${indent}    highlight('${node.id}')\n`;
+        }
     }
 
     // -------------------------------
@@ -2922,14 +2941,12 @@ if (directEndExits.length > 0) {
         // force negative step
         finalStep = -Math.abs(step);
 
-        // For decreasing loops, we need to go one past the boundary
-        // because the decrement happens in the loop body
         if (comparisonOp === '>') {
-            // For x > N, loop runs until x == N+1, then decrements to x == N
-            finalEnd = `${parseInt(endValue) - 1}`;
+            // For x > N, range goes to N (exclusive)
+            finalEnd = endValue;
         } else if (comparisonOp === '>=') {
-            // For x >= N, loop runs until x == N, then decrements to x == N-1
-            finalEnd = `${parseInt(endValue) - 2}`;
+            // For x >= N, range goes to N-1 (exclusive)
+            finalEnd = `${parseInt(endValue) - 1}`;
         } else {
             finalEnd = endValue;
         }
@@ -2939,11 +2956,11 @@ if (directEndExits.length > 0) {
         finalStep = Math.abs(step);
 
         if (comparisonOp === '<') {
-            // For x < N, loop runs until x == N-1, then increments to x == N
+            // For flowchart logic: x < N should end with x = N
             finalEnd = `(${endValue}) + 1`;
         } else if (comparisonOp === '<=') {
-            // For x <= N, loop runs until x == N, then increments to x == N+1
-            finalEnd = `(${endValue}) + 2`;
+            // For x <= N, range goes to N+1
+            finalEnd = `(${endValue}) + 1`;
         } else {
             finalEnd = endValue;
         }
@@ -3689,14 +3706,27 @@ compileElifChainUntil(elifNode, convergencePoint, visitedInPath, contextStack, i
 /**
  * Find the current loop header from context stack
  */
-findCurrentLoopHeader(contextStack) {
-    for (const ctx of contextStack) {
-        if (ctx.startsWith('loop_')) {
-            return ctx.replace('loop_', '');
+    findCurrentLoopHeader(contextStack) {
+        for (const ctx of contextStack) {
+            if (ctx.startsWith('loop_')) {
+                return ctx.replace('loop_', '');
+            }
         }
+        return null;
     }
-    return null;
-}
+
+    detectArrayIndexing(variable) {
+        // Check if the variable is used for array indexing like array[var]
+        const arrayIndexPattern = new RegExp(`\\w+\\[${variable}\\]`);
+
+        for (const node of this.nodes) {
+            if (node.text && arrayIndexPattern.test(node.text)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
 /**
  * Check if decisions form a linear chain (for elif)
