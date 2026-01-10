@@ -2102,9 +2102,11 @@ isSimpleWhileLoop(decisionId) {
 
     console.log(`isSimpleWhileLoop(${decisionId}): yes=${yesId}, no=${noId}, yesLoops=${yesLoops}, noLoops=${noLoops}`);
 
-    // A simple while loop: at least one branch loops back
-    // Prefer yes branch as body if it loops, otherwise no branch
-    return yesLoops || noLoops;
+    // A simple while loop requires EXACTLY ONE branch to loop back
+    // The other branch should exit without looping
+    // This prevents false positives for complex nested conditions
+    const oneBranchLoops = (yesLoops && !noLoops) || (!yesLoops && noLoops);
+    return oneBranchLoops;
 }
 
 
@@ -2659,8 +2661,11 @@ if (loopType === 'while_true_with_breaks') {
     const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
     code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
     
-    // Check exit condition
-    code += `${indent}    if not (${condition}):\n`;
+    // For simple while loops, use if-break structure instead of while-else
+    // This ensures exit conditions execute during the loop, not after natural exit
+    // For useNoBranch=true, we want to check the original condition (not inverted)
+    const exitCondition = useNoBranch ? node.text : `not (${node.text})`;
+    code += `${indent}    if ${exitCondition}:\n`;
     const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 2, false, false);
     code += exitCode || `${indent}        pass\n`;
     code += `${indent}        break\n`;
@@ -2676,23 +2681,27 @@ if (loopType === 'while_true_with_breaks') {
     const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
     code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
 } else {
-    // Regular while without else
-    code += `${indent}while ${condition}:\n`;
-    
+    // For simple while loops, use while True with if-break instead of while-else
+    // This ensures exit conditions execute properly during the loop
+    code += `${indent}while True:\n`;
+
     if (this.useHighlighting) {
         code += `${indent}    highlight('${node.id}')\n`;
     }
-    
+
+    // Add exit condition check at the beginning of the loop body
+    const exitCondition = useNoBranch ? node.text : `not (${node.text})`;
+    code += `${indent}    if ${exitCondition}:\n`;
+    if (exitId) {
+        const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 2, false, false);
+        code += exitCode || `${indent}        pass\n`;
+    }
+    code += `${indent}        break\n`;
+
+    // Compile the loop body
     const whileCtx = [...contextStack, `loop_${node.id}`];
     const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
     code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
-
-    // exit path in while-else (only executes when loop exits naturally)
-    if (exitId) {
-        code += `${indent}else:\n`;
-        const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 1, false, false);
-        code += exitCode || `${indent}    pass\n`;
-    }
 }
 
 return code;
@@ -3766,6 +3775,8 @@ compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel,
     inLoopBody = false,
     inLoopHeader = false) {
 
+    // Check if branches need break statements
+    const noBranchNeedsBreak = noId && inLoopBody && this.reachesEndWithoutReturningToHeader(noId, this.findCurrentLoopHeader(contextStack));
 
 // Instead of checking forInfo, check if the branch contains an increment of the loop variable
 if (node.text === "empty") {
@@ -3939,6 +3950,7 @@ if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
             if (!ifCode.endsWith("\n")) ifCode += "\n";
             ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
         }
+
     }
     
     
@@ -3999,6 +4011,11 @@ elseCode = this.compileNodeUntil(
             );
         }
         
+        // Add break if the else branch exits the loop
+        if (noBranchNeedsBreak) {
+            if (elseCode && !elseCode.endsWith("\n")) elseCode += "\n";
+            elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+        }
         
         code += elseCode || `${indent}    pass\n`;
     }
@@ -4031,6 +4048,11 @@ elseCode = this.compileNodeUntil(
                 );
             }
             
+            // Add break if the else branch exits the loop
+            if (noBranchNeedsBreak) {
+                if (elseCode && !elseCode.endsWith("\n")) elseCode += "\n";
+                elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+            }
             
             code += elseCode || `${indent}    pass\n`;
         }
