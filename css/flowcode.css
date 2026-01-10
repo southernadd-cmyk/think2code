@@ -1,48 +1,482 @@
 :root {
+    /* Python Brand Colors */
+    --python-blue: #3776AB;
+    --python-yellow: #FFD43B;
+    --python-dark-blue: #1e415e;
+    --python-light-blue: #4a90d9;
+
     /* Backgrounds */
     --bg-canvas: #f8fafc;
     --bg-sidebar: #ffffff;
     --bg-panel: #f1f5f9;
-    
-    /* Professional Flowchart Colors (Softer, modern) */
-    --color-start-end: #10b981;    /* Emerald 500 */
-    --color-process: #6366f1;      /* Indigo 500 */
-    --color-decision: #f59e0b;     /* Amber 500 */
-    --color-input-output: #0ea5e9; /* Sky 500 */
-    --color-variable: #8b5cf6;     /* Violet 500 */
-    --color-list: #ec4899;         /* Pink 500 */
-    --bs-secondary-color: #FFD43B!important;
+    --bg-header: var(--python-blue);
+
+    /* Professional Flowchart Colors (Python-themed) */
+    --color-start-end: #10b981;        /* Keep emerald for start/end */
+    --color-process: var(--python-blue);    /* Python blue for process */
+    --color-decision: var(--python-yellow); /* Python yellow for decisions */
+    --color-input-output: var(--python-light-blue); /* Light blue for I/O */
+    --color-variable: #8b5cf6;         /* Keep violet for variables */
+    --color-list: #ec4899;             /* Keep pink for lists */
+
     /* UI Accents */
+    --accent-primary: var(--python-blue);
+    --accent-secondary: var(--python-yellow);
+    --accent-hover: var(--python-dark-blue);
 
     --border-subtle: #e2e8f0;
+    --text-main: #0f172a;
+    --text-muted: #64748b;
 
     --node-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-    --node-selected: 0 0 0 3px rgba(37, 99, 235, 0.4);
-/* Think2Code – Python Brand */
---accent: #3776AB;          /* Python blue */
---accent-warm: #FFD43B;     /* Python yellow */
---text-main: #0f172a;
+    --node-selected: 0 0 0 3px rgba(55, 118, 171, 0.4); /* Python blue with opacity */
 
+    /* Keep the highlight color unchanged */
+    --highlight-color: #eed202; /* Original highlight color */
+}
+/* Interactive Elements Cursors */
+.palette-item {
+    cursor: grab;
+    transition: all 0.2s ease;
+    border: 2px solid transparent;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    color: white;
+    font-weight: 500;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
 
+.palette-item:hover {
+    cursor: grab;
+    background-color: var(--accent-secondary);
+    color: var(--python-dark-blue);
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    border-color: var(--python-blue);
 }
-.dropdown-item{
- cursor:grab;   
+
+.palette-item:active,
+.palette-item[aria-pressed="true"] {
+    cursor: grabbing;
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
 }
+
+.dropdown-item {
+    cursor: pointer;
+    transition: background-color 0.2s ease;
+}
+
+.dropdown-item:hover {
+    cursor: pointer;
+    background-color: var(--python-yellow);
+    color: var(--python-dark-blue);
+}
+
+.dropdown-menu {
+    border: 1px solid var(--python-dark-blue);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.node {
+    cursor: move;
+}
+
+.node:hover {
+    cursor: move;
+}
+
+.connection-point {
+    cursor: crosshair;
+}
+
+.connection-point:hover {
+    cursor: crosshair;
+    background-color: var(--accent-secondary);
+}
+
+.btn {
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border-radius: 6px;
+}
+
+.btn:hover {
+    cursor: pointer;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.btn-primary {
+    background-color: var(--python-blue);
+    border-color: var(--python-blue);
+}
+
+.btn-primary:hover {
+    background-color: var(--python-dark-blue);
+    border-color: var(--python-dark-blue);
+}
+
+.btn-warning {
+    background-color: var(--python-yellow);
+    border-color: var(--python-yellow);
+    color: var(--python-dark-blue);
+    font-weight: 600;
+    text-shadow: 0 1px 1px rgba(255, 255, 255, 0.3);
+}
+
+.btn-warning:hover {
+    background-color: #e6c947;
+    border-color: #e6c947;
+    color: var(--python-dark-blue);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+}
+
+.btn-outline-light {
+    border-color: rgba(255, 255, 255, 0.5);
+    color: white;
+}
+
+.btn-outline-light:hover {
+    background-color: white;
+    color: var(--python-blue);
+    border-color: white;
+}
+
+/* Navbar Python Theming */
+.navbar {
+    background: linear-gradient(135deg, var(--python-blue) 0%, var(--python-dark-blue) 100%) !important;
+    border-bottom: 2px solid var(--python-dark-blue);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.navbar-brand {
+    color: white !important;
+    font-weight: 600;
+}
+
+.navbar-brand:hover {
+    color: var(--python-yellow) !important;
+}
+
+/* Navbar Button Groups */
+.navbar .btn-group .btn {
+    border-radius: 6px !important;
+    margin: 0 1px;
+}
+
+.navbar .btn-group .btn:first-child {
+    border-top-right-radius: 0 !important;
+    border-bottom-right-radius: 0 !important;
+}
+
+.navbar .btn-group .btn:last-child {
+    border-top-left-radius: 0 !important;
+    border-bottom-left-radius: 0 !important;
+}
+
+.navbar .btn-group .dropdown-toggle {
+    border-radius: 6px !important;
+}
+
+/* Individual button spacing */
+.navbar .btn:not(.btn-group .btn) {
+    margin: 0 2px;
+}
+
+/* Mobile navbar adjustments */
+@media (max-width: 768px) {
+    .navbar .d-flex {
+        flex-wrap: wrap;
+        gap: 0.25rem !important;
+    }
+
+    .navbar .btn-group {
+        margin-right: 2px !important;
+        margin-bottom: 2px;
+    }
+
+    .navbar .btn:not(.btn-group .btn) {
+        margin: 0 1px 2px 0;
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+    }
+
+    .navbar .btn-group .btn {
+        padding: 0.25rem 0.5rem;
+        font-size: 0.75rem;
+    }
+
+    /* Extra compact on very small screens */
+    @media (max-width: 576px) {
+        .navbar .btn {
+            padding: 0.2rem 0.4rem;
+            font-size: 0.7rem;
+            min-width: 32px;
+        }
+
+        .navbar .btn-group .btn {
+            padding: 0.2rem 0.4rem;
+            font-size: 0.7rem;
+        }
+    }
+}
+
 .brain-icon {
-    color: #FFD43B; /* Python yellow */
-    transform: scale(0.75);   
-  }
-  
-  .python-icon {
-    color: #3776AB; /* Python blue */
+    color: var(--python-yellow);
+    transform: scale(0.75);
+    filter: drop-shadow(0 0 2px rgba(255, 212, 59, 0.3));
+}
+
+.python-icon {
+    color: var(--python-blue);
     font-size: 0.85em;
     transform: translateY(2px);
-  }
+    filter: drop-shadow(0 0 2px rgba(55, 118, 171, 0.3));
+}
 
   
 #palette::-webkit-scrollbar-track {
-    background: #ffd343; /* Matches the sidebar bg */
+    background: var(--python-light-blue); /* Matches the blue sidebar bg */
 }    
+
+/* Speed Slider with Ticks */
+#speed-slider-container {
+    position: relative;
+    padding: 10px 15px;
+}
+
+#speed-slider {
+    width: 100%;
+    height: 6px;
+    border-radius: 3px;
+    background: linear-gradient(to right,
+        var(--python-yellow) 0%,
+        var(--python-blue) 50%,
+        var(--python-dark-blue) 100%);
+    outline: none;
+    -webkit-appearance: none;
+    appearance: none;
+    cursor: pointer;
+}
+
+#speed-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--python-yellow);
+    border: 2px solid var(--python-dark-blue);
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s ease;
+}
+
+#speed-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.1);
+    background: white;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+}
+
+#speed-slider::-webkit-slider-track {
+    width: 100%;
+    height: 6px;
+    cursor: pointer;
+    background: transparent;
+}
+
+/* Speed slider ticks */
+.speed-ticks {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 8px;
+    font-size: 10px;
+    color: white;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+}
+
+.speed-tick {
+    text-align: center;
+    font-weight: 500;
+}
+
+/* Enhanced UI Elements */
+.zoombox {
+    background: rgba(255, 255, 255, 0.95);
+    backdrop-filter: blur(10px);
+    border: 2px solid var(--python-blue);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.zoombox button {
+    background: transparent;
+    border: none;
+    color: var(--python-blue);
+    padding: 8px;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.zoombox button:hover {
+    background: var(--python-blue);
+    color: white;
+    transform: scale(1.05);
+}
+
+#palette {
+    background: linear-gradient(180deg, var(--python-blue) 0%, var(--python-light-blue) 100%);
+    backdrop-filter: blur(10px);
+    border-right: 2px solid var(--python-dark-blue);
+    box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+}
+
+.palette-header {
+    background: linear-gradient(135deg, var(--python-dark-blue), var(--python-blue));
+    color: white;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    font-weight: 600;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .wrapper {
+        flex-direction: column;
+    }
+
+    #palette {
+        position: fixed;
+        top: 0;
+        left: -280px;
+        width: 280px;
+        height: 100vh;
+        z-index: 1000;
+        transition: left 0.3s ease;
+        border-radius: 0 8px 8px 0;
+        box-shadow: 2px 0 8px rgba(0, 0, 0, 0.1);
+    }
+
+    #palette.open {
+        left: 0;
+    }
+
+    #canvas {
+        margin-left: 0;
+        width: 100vw;
+        height: calc(100vh - 56px - 200px); /* Account for navbar and output panel */
+    }
+
+    #output-panel {
+        position: fixed;
+        bottom: 0;
+        left: 0;
+        width: 100vw;
+        height: 200px;
+        border-radius: 8px 8px 0 0;
+    }
+
+    .navbar-toggler {
+        display: block !important;
+    }
+
+    .palette-toggle-btn {
+        display: block !important;
+        position: fixed;
+        top: 70px;
+        left: 10px;
+        z-index: 999;
+        background: linear-gradient(135deg, var(--python-yellow), var(--python-blue));
+        color: white;
+        border: 2px solid var(--python-dark-blue);
+        border-radius: 50%;
+        width: 44px;
+        height: 44px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        transition: all 0.2s ease;
+        font-size: 16px;
+    }
+
+    .palette-toggle-btn:hover {
+        transform: scale(1.05);
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    }
+
+    .zoombox {
+        top: 70px !important;
+        right: 10px !important;
+    }
+}
+
+@media (max-width: 480px) {
+    #palette {
+        width: 250px;
+    }
+
+    .palette-item {
+        padding: 12px;
+        font-size: 14px;
+    }
+
+    #speed-slider-container {
+        padding: 8px 12px;
+    }
+
+    .speed-ticks {
+        font-size: 9px;
+    }
+
+    .node {
+        font-size: 12px;
+        min-width: 80px;
+        min-height: 35px;
+    }
+
+    .zoombox button {
+        padding: 6px;
+        font-size: 12px;
+    }
+
+    #output-panel {
+        height: 150px;
+    }
+
+    #code-python {
+        font-size: 11px;
+    }
+
+    #console {
+        font-size: 11px;
+    }
+}
+
+/* Touch-friendly interactions */
+@media (hover: none) and (pointer: coarse) {
+    .palette-item {
+        min-height: 48px;
+        padding: 14px;
+    }
+
+    .btn {
+        min-height: 44px;
+        padding: 10px 16px;
+    }
+
+    .node {
+        min-width: 100px;
+        min-height: 44px;
+    }
+
+    .connection-point {
+        width: 16px;
+        height: 16px;
+    }
+}
 
 .no-select {
   user-select: none;          /* Standard */
@@ -210,9 +644,9 @@ body {
 /* ========== PALETTE ========== */
 #palette {
     width: 260px;
-    background: var(--bg-sidebar);
+    background: linear-gradient(180deg, var(--python-blue) 0%, var(--python-light-blue) 100%);
     padding: 24px 16px;
-    border-right: 1px solid var(--border-subtle);
+    border-right: 2px solid var(--python-dark-blue);
     overflow-y:auto;
 }
 
@@ -323,7 +757,7 @@ svg#connections-layer {
 /* when running, just follow the global green, no extra glow */
 .shape-start.running, .shape-end.running {
 filter: grayscale(1) sepia(1) hue-rotate(35deg) saturate(25) !important;
-background-color:#eed202 ;
+background-color: var(--highlight-color);
     background-image: none !important;
     box-shadow: none;
 }
@@ -341,7 +775,7 @@ background-color:#eed202 ;
 
 .shape-process.running {
     filter: grayscale(1) sepia(1) hue-rotate(35deg) saturate(25) !important;
-    background-color:#eed202 ;
+    background-color: var(--highlight-color);
     background-image: none !important;
     box-shadow: none;
 }
@@ -359,7 +793,7 @@ background-color:#eed202 ;
 
 .shape-var.running {
     filter: grayscale(1) sepia(1) hue-rotate(35deg) saturate(25) !important;
-    background-color:#eed202 ;
+    background-color: var(--highlight-color);
     background-image: none !important;
     box-shadow: none;
 }
@@ -430,7 +864,7 @@ z-index: 2;                     /* sit above shape borders/fills */
 
 .shape-output.running, .shape-input.running {
     filter: grayscale(1) sepia(1) hue-rotate(35deg) saturate(25);
-    background-color:#eed202 ;
+    background-color: var(--highlight-color);
     background-image: none !important;
     box-shadow: none;
 }
@@ -519,7 +953,7 @@ z-index: 2;                     /* sit above shape borders/fills */
 
 .shape-list.running {
     filter: grayscale(1) sepia(1) hue-rotate(35deg) saturate(25) !important;
-    background-color:#eed202 ;
+    background-color: var(--highlight-color);
     background-image: none !important;
     box-shadow: none;
 }
@@ -860,4 +1294,3 @@ z-index: 2;                     /* sit above shape borders/fills */
 .modal-open {
     overflow: scroll;
 }
-
