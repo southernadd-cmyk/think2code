@@ -1597,6 +1597,10 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         // ===========================
         if (this.isInitOfForLoop(nodeId)) {
             console.log(`Skipping for-loop init node: ${nodeId}`);
+            // Add highlight for skipped init nodes
+            if (this.useHighlighting) {
+                code += this.emitHighlight(nodeId, indentLevel);
+            }
             const succ = this.getAllSuccessors(nodeId);
             for (const { nodeId: nxt } of succ) {
                 code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
@@ -1608,6 +1612,10 @@ const inDecisionControlledLoop = contextStack.some(ctx => {
         // skip nodes marked in nodesToSkip
         // ===========================
         if (this.nodesToSkip && this.nodesToSkip.has(nodeId)) {
+            // Add highlight for skipped nodes (important for increment nodes in for-loops)
+            if (this.useHighlighting) {
+                code += this.emitHighlight(nodeId, indentLevel);
+            }
             // transparent skip - don't compile this node or its successors
             return code;
         }
@@ -2565,6 +2573,11 @@ const bodyCode = this.compileNode(
 let finalBodyCode = bodyCode;
 
 code += finalBodyCode.trim() ? finalBodyCode : `${indent}    pass\n`;
+
+// Add highlighting for the increment node at the end of the loop body
+if (this.useHighlighting && forInfo.incrementNodeId) {
+    code += `${indent}    highlight('${forInfo.incrementNodeId}')\n`;
+}
 
 // -------------------------------
 // compile exit path AFTER loop
