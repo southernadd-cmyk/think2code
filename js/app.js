@@ -681,6 +681,22 @@ if (!location.hash.startsWith("#chart=")) {
     this.loadExampleFromFile("welcome.json");
 }
 
+// Show palette toggle button on mobile
+if (window.innerWidth <= 768) {
+    document.querySelector(".palette-toggle-btn").classList.remove("d-none");
+}
+
+// Handle window resize for responsive behavior
+window.addEventListener("resize", () => {
+    if (window.innerWidth <= 768) {
+        document.querySelector(".palette-toggle-btn").classList.remove("d-none");
+        document.getElementById("palette").classList.remove("open");
+    } else {
+        document.querySelector(".palette-toggle-btn").classList.add("d-none");
+        document.getElementById("palette").classList.remove("open");
+    }
+});
+
     },
 
     log(t) { 
@@ -689,6 +705,58 @@ if (!location.hash.startsWith("#chart=")) {
         s.innerText = t; 
         c.appendChild(s); 
         c.scrollTop = c.scrollHeight; 
+    },
+
+    togglePalette() {
+        const palette = document.getElementById("palette");
+        palette.classList.toggle("open");
+    },
+
+    getNodeAtPosition(x, y) {
+        // Convert screen coordinates to canvas coordinates
+        const canvasX = (x - this.viewportX) / this.viewportScale;
+        const canvasY = (y - this.viewportY) / this.viewportScale;
+
+        // Find node at position
+        for (const node of this.nodes) {
+            const nodeEl = document.getElementById(node.id);
+            if (!nodeEl) continue;
+
+            const rect = nodeEl.getBoundingClientRect();
+            const nodeX = (rect.left - this.canvas.getBoundingClientRect().left - this.viewportX) / this.viewportScale;
+            const nodeY = (rect.top - this.canvas.getBoundingClientRect().top - this.viewportY) / this.viewportScale;
+            const nodeW = rect.width / this.viewportScale;
+            const nodeH = rect.height / this.viewportScale;
+
+            if (canvasX >= nodeX && canvasX <= nodeX + nodeW &&
+                canvasY >= nodeY && canvasY <= nodeY + nodeH) {
+                return node;
+            }
+        }
+        return null;
+    },
+
+    handlePinchStart(e) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        this.initialDistance = Math.sqrt(
+            Math.pow(touch2.clientX - touch1.clientX, 2) +
+            Math.pow(touch2.clientY - touch1.clientY, 2)
+        );
+        this.initialScale = this.viewportScale;
+    },
+
+    handlePinchMove(e) {
+        const touch1 = e.touches[0];
+        const touch2 = e.touches[1];
+        const currentDistance = Math.sqrt(
+            Math.pow(touch2.clientX - touch1.clientX, 2) +
+            Math.pow(touch2.clientY - touch1.clientY, 2)
+        );
+
+        const scale = (currentDistance / this.initialDistance) * this.initialScale;
+        this.viewportScale = Math.min(this.maxScale, Math.max(this.minScale, scale));
+        this.applyViewportTransform();
     },
 
     handleInput(prompt) {
@@ -1107,6 +1175,84 @@ window.addEventListener("pointermove", (e) => {
 
 window.addEventListener("pointerup", () => {
     isPanning = false;
+});
+
+// Mobile and touch improvements
+this.canvas.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+        // Pinch to zoom
+        e.preventDefault();
+        this.handlePinchStart(e);
+    } else if (e.touches.length === 1) {
+        // Single touch for panning or selection
+        const touch = e.touches[0];
+        const rect = this.canvas.getBoundingClientRect();
+        const x = touch.clientX - rect.left;
+        const y = touch.clientY - rect.top;
+
+        // Check if touching a node
+        const touchedNode = this.getNodeAtPosition(x, y);
+        if (touchedNode) {
+            this.selectNode(touchedNode);
+            this.dragStartX = x;
+            this.dragStartY = y;
+            this.isDragging = true;
+        } else {
+            // Start panning
+            isPanning = true;
+            panStartX = touch.clientX - this.viewportX;
+            panStartY = touch.clientY - this.viewportY;
+        }
+    }
+}, { passive: false });
+
+this.canvas.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2) {
+        // Handle pinch zoom
+        e.preventDefault();
+        this.handlePinchMove(e);
+    } else if (e.touches.length === 1 && isPanning) {
+        // Handle panning
+        const touch = e.touches[0];
+        this.viewportX = touch.clientX - panStartX;
+        this.viewportY = touch.clientY - panStartY;
+        this.applyViewportTransform();
+    } else if (this.isDragging) {
+        // Handle node dragging
+        const touch = e.touches[0];
+        const rect = this.canvas.getBoundingClientRect();
+        const x = touch.clientX - rect.left;
+        const y = touch.clientY - rect.top;
+
+        const dx = x - this.dragStartX;
+        const dy = y - this.dragStartY;
+
+        if (this.selectedNode) {
+            this.moveNode(this.selectedNode, dx, dy);
+            this.dragStartX = x;
+            this.dragStartY = y;
+        }
+    }
+}, { passive: false });
+
+this.canvas.addEventListener("touchend", (e) => {
+    if (e.touches.length === 0) {
+        isPanning = false;
+        this.isDragging = false;
+        this.selectedNode = null;
+    }
+});
+
+// Close palette when clicking outside on mobile
+document.addEventListener("click", (e) => {
+    const palette = document.getElementById("palette");
+    const toggleBtn = document.querySelector(".palette-toggle-btn");
+
+    if (window.innerWidth <= 768) {
+        if (!palette.contains(e.target) && !toggleBtn.contains(e.target)) {
+            palette.classList.remove("open");
+        }
+    }
 });
 
         window.onkeydown = (e) => {
