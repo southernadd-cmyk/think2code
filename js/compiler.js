@@ -2927,11 +2927,11 @@ if (directEndExits.length > 0) {
         if (comparisonOp === '>') {
             // For literal integers: subtract 1 for exact flowchart logic (x > 0 -> range(10, -1, -1))
             // For variables: keep bounds-safe to prevent IndexError
-            finalEnd = isLiteralInteger ? `(${endValue}) - 1` : endValue;
+            finalEnd = isLiteralInteger ? `${parseInt(endValue) - 1}` : endValue;
         } else if (comparisonOp === '>=') {
             // For literal integers: subtract 2 for exact flowchart logic (x >= 1 -> range(10, -1, -1))
             // For variables: subtract 1 (bounds-safe)
-            finalEnd = isLiteralInteger ? `(${endValue}) - 2` : `(${endValue}) - 1`;
+            finalEnd = isLiteralInteger ? `${parseInt(endValue) - 2}` : `(${endValue}) - 1`;
         } else {
             finalEnd = endValue;
         }
@@ -2946,11 +2946,11 @@ if (directEndExits.length > 0) {
         if (comparisonOp === '<') {
             // For literal integers: add +1 for exact flowchart logic
             // For variables: keep bounds-safe to prevent IndexError
-            finalEnd = isLiteralInteger ? `(${endValue}) + 1` : endValue;
+            finalEnd = isLiteralInteger ? `${parseInt(endValue) + 1}` : endValue;
         } else if (comparisonOp === '<=') {
             // For literal integers: add +2 for exact flowchart logic
             // For variables: add +1 (bounds-safe)
-            finalEnd = isLiteralInteger ? `(${endValue}) + 2` : `(${endValue}) + 1`;
+            finalEnd = isLiteralInteger ? `${parseInt(endValue) + 2}` : `(${endValue}) + 1`;
         } else {
             finalEnd = endValue;
         }
