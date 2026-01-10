@@ -2922,9 +2922,14 @@ if (directEndExits.length > 0) {
         // force negative step
         finalStep = -Math.abs(step);
 
-        // range() is exclusive
-        if (comparisonOp === '>=') {
+        // For decreasing loops, we need to go one past the boundary
+        // because the decrement happens in the loop body
+        if (comparisonOp === '>') {
+            // For x > N, loop runs until x == N+1, then decrements to x == N
             finalEnd = `${parseInt(endValue) - 1}`;
+        } else if (comparisonOp === '>=') {
+            // For x >= N, loop runs until x == N, then decrements to x == N-1
+            finalEnd = `${parseInt(endValue) - 2}`;
         } else {
             finalEnd = endValue;
         }
@@ -2933,9 +2938,12 @@ if (directEndExits.length > 0) {
         // ensure positive step
         finalStep = Math.abs(step);
 
-        if (comparisonOp === '<=') {
-            // include the end value
+        if (comparisonOp === '<') {
+            // For x < N, loop runs until x == N-1, then increments to x == N
             finalEnd = `(${endValue}) + 1`;
+        } else if (comparisonOp === '<=') {
+            // For x <= N, loop runs until x == N, then increments to x == N+1
+            finalEnd = `(${endValue}) + 2`;
         } else {
             finalEnd = endValue;
         }
