@@ -45,33 +45,39 @@
             <i class="fa-brands fa-python fa-stack-1x python-icon"></i>
           </span>Think2Code<small class="text-muted"> beta</small></span>
 
-        <div class="d-flex gap-2">
+        <div class="d-flex gap-1 align-items-center">
+            <!-- Mobile palette toggle -->
+            <button class="btn btn-outline-light btn-sm palette-toggle-btn d-none" onclick="App.togglePalette()">
+                <i class="fa-solid fa-bars"></i>
+            </button>
 
-            <button id="btn-challenges" class="btn btn-warning">
-                Challenges
-              </button>
-              
-            <!-- RUN button (shown when idle) -->
-<button id="run-btn"
-class="btn btn-success btn-sm px-4 fw-bold"
-onclick="App.runSim()">
-<i class="fa-solid fa-play me-1"></i> RUN
-</button>
+            <!-- Run/Stop Controls -->
+            <div class="btn-group me-2">
+                <button id="run-btn" class="btn btn-success btn-sm fw-bold" onclick="App.runSim()">
+                    <i class="fa-solid fa-play"></i> RUN
+                </button>
+                <button id="stop-btn" class="btn btn-danger btn-sm fw-bold" style="display:none" onclick="App.stopSim()">
+                    <i class="fa-solid fa-stop"></i> STOP
+                </button>
+            </div>
 
-<!-- STOP button (hidden until running) -->
-<button id="stop-btn"
-class="btn btn-danger btn-sm px-4 fw-bold"
-style="display:none"
-onclick="App.stopSim()">
-<i class="fa-solid fa-stop me-1"></i> STOP
-</button>
+            <!-- File Operations Dropdown -->
+            <div class="btn-group me-2">
+                <button class="btn btn-primary btn-sm dropdown-toggle fw-bold" data-bs-toggle="dropdown">
+                    <i class="fa-solid fa-file"></i> File
+                </button>
+                <ul class="dropdown-menu">
+                    <li><a class="dropdown-item" onclick="App.openSaveOptions()"><i class="fa-solid fa-download me-2"></i>Save Flowchart</a></li>
+                    <li><a class="dropdown-item" onclick="App.loadDiagram()"><i class="fa-solid fa-upload me-2"></i>Load Flowchart</a></li>
+                    <li><hr class="dropdown-divider"></li>
+                    <li><a class="dropdown-item" onclick="App.clearCanvas()"><i class="fa-solid fa-trash me-2"></i>Clear All</a></li>
+                </ul>
+            </div>
 
-<button class="btn btn-primary btn-sm px-3 fw-bold" onclick="App.openSaveOptions()">
-    <i class="fa-solid fa-download me-1"></i> Save</button>
-            <button class="btn btn-info btn-sm px-3 fw-bold" onclick="App.loadDiagram()"><i class="fa-solid fa-upload me-1"></i> Load</button>
-            <div class="btn-group">
+            <!-- Examples Dropdown -->
+            <div class="btn-group me-2">
                 <button class="btn btn-secondary btn-sm dropdown-toggle fw-bold" data-bs-toggle="dropdown">
-                Examples
+                    <i class="fa-solid fa-lightbulb"></i> Examples
                 </button>
             
                 <ul class="dropdown-menu">
@@ -87,8 +93,11 @@ onclick="App.stopSim()">
                 <li><a class="dropdown-item" onclick="App.loadExampleFromFile('random.json')">Random Number</a></li>
                 </ul>
             </div>
-            
-            <button class="btn btn-outline-light btn-sm" onclick="App.clearCanvas()">Clear All</button>
+
+            <!-- Challenges Button -->
+            <button id="btn-challenges" class="btn btn-warning btn-sm fw-bold">
+                <i class="fa-solid fa-trophy"></i> Challenges
+            </button>
         </div>
     </div>
 </nav>
@@ -109,10 +118,17 @@ onclick="App.stopSim()">
             
             <div class="palette-header">I/O</div>
             <div class="palette-item" draggable="true" data-type="input">Input</div>
-            <div class="palette-item" draggable="true" data-type="output">Print</div>
+            <div class="palette-item" draggable="true" data-type="output">Output</div>
 
             <div class="palette-header">Speed</div>
-            <input type="range" class="form-range" id="speed-slider" min="100" max="2000" value="1600">
+            <div id="speed-slider-container">
+                <input type="range" id="speed-slider" min="100" max="2000" value="1600">
+                <div class="speed-ticks">
+                    <span class="speed-tick">Slow</span>
+                    <span class="speed-tick">Medium</span>
+                    <span class="speed-tick">Fast</span>
+                </div>
+            </div>
         </div>
 
         <div id="canvas">
@@ -500,7 +516,6 @@ App.init();
 </body>
 
 </html>
-
 
 
 
