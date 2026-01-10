@@ -36,7 +36,7 @@
 }
 /* Interactive Elements Cursors */
 .palette-item {
-    cursor: grab;
+    cursor: alias;
     transition: all 0.2s ease;
     border: 2px solid transparent;
     border-radius: 6px;
@@ -47,13 +47,14 @@
 }
 
 .palette-item:hover {
-    cursor: grab;
+    cursor: alias !important;
     background-color: var(--accent-secondary);
     color: var(--python-dark-blue);
     transform: translateY(-1px);
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
     border-color: var(--python-blue);
 }
+
 
 .palette-item:active,
 .palette-item[aria-pressed="true"] {
