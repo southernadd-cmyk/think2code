@@ -3438,50 +3438,67 @@ class BreakManager {
      * @returns {boolean} - True if break should be added
      */
     shouldAddBreak(branchStartId, loopHeaderId, contextStack, loopType, convergencePoint = null) {
+        console.log(`BreakManager.shouldAddBreak(${branchStartId}, ${loopHeaderId}, contextStack=`, contextStack, `, loopType=${loopType}, convergencePoint=${convergencePoint})`);
         // Step 1: Basic checks
-        if (!loopHeaderId) return false; // Must be inside a loop
-        if (!branchStartId) return false; // Must have a valid branch
-        
-        // Step 2: Check if branch loops back to header (NOT an exit)
-        if (this.branchLoopsBackToHeader(branchStartId, loopHeaderId)) {
-            return false; // Branch loops back, not an exit
+        if (!loopHeaderId) {
+            console.log(`  Step 1: No loopHeaderId, returning false`);
+            return false;      // Must be inside a loop
         }
-        
-        // Step 3: Check if branch reaches END
-        if (!this.branchReachesEnd(branchStartId, loopHeaderId)) {
-            return false; // Branch doesn't exit
+        if (!branchStartId) {
+            console.log(`  Step 1: No branchStartId, returning false`);
+            return false;     // Must have a valid branch
         }
-        
-        // Step 4: Loop type specific checks
-        if (loopType === 'for') {
-            // For loops: only break on early exits
-            // Normal for-loop completion doesn't need a break
-            // (The loop naturally completes when condition is false)
-            // Early exits are already handled by checking if branch reaches END
-            // So we allow breaks for for loops if they exit
-        }
-        
-        // Step 5: Check nested loops - ensure break exits correct loop
-        const targetLoop = this.findTargetLoopLevel(branchStartId, contextStack);
-        if (targetLoop && targetLoop !== loopHeaderId) {
-            // Break should exit a different loop - don't add here
+    
+        // IMPORTANT CHANGE:
+        // We NO LONGER veto just because the branch *can* reach the header.
+        // Instead we rely on branchReachesEnd, which already ignores paths
+        // that return to the header (reachesEndWithoutReturningToHeader).
+    
+        // Step 2: Does any path from this branch reach END
+        // without returning to the loop header?
+        const reachesEnd = this.branchReachesEnd(branchStartId, loopHeaderId);
+        console.log(`  Step 2: branchReachesEnd(${branchStartId}, ${loopHeaderId}) = ${reachesEnd}`);
+        if (!reachesEnd) {
+            // No exit path → no break
+            console.log(`  Step 2: No exit path, returning false`);
             return false;
         }
-        
-        // Step 6: Convergence point check
+    
+        // Step 3: Loop-type specific tweaks (keep as a hook)
+        if (loopType === 'for') {
+            // For loops: "normal" completion falls out via condition,
+            // but an early path to END still counts as a valid break.
+            // (Nothing extra needed here right now.)
+        }
+    
+        // Step 4: Nested loops — ensure we're not accidentally
+        // breaking an outer loop instead of the current one.
+        const targetLoop = this.findTargetLoopLevel(branchStartId, contextStack);
+        console.log(`  Step 4: findTargetLoopLevel(${branchStartId}) = ${targetLoop}`);
+        if (targetLoop && targetLoop !== loopHeaderId) {
+            console.log(`  Step 4: Target loop ${targetLoop} !== loopHeaderId ${loopHeaderId}, returning false`);
+            return false;
+        }
+    
+        // Step 5: Convergence point check
         if (convergencePoint) {
             const convNode = this.nodes.find(n => n.id === convergencePoint);
-            if (convNode && convNode.type === 'end') {
-                // Convergence is END - this is an exit
+            console.log(`  Step 5: convergencePoint=${convergencePoint}, convNode.type=${convNode?.type}`);
+            if (convNode && convNode.type === "end") {
+                // Convergence IS END → this is clearly an exit
+                console.log(`  Step 5: Convergence is END, returning true`);
                 return true;
             }
-            // Convergence is not END - check if branch actually exits
-            return this.branchReachesEnd(branchStartId, loopHeaderId);
+            // Otherwise, fall back to the exit check we already did
+            console.log(`  Step 5: Convergence not END, returning branchReachesEnd=${reachesEnd}`);
+            return reachesEnd;
         }
-        
-        // Step 7: All checks passed - add break
+    
+        // Step 6: All checks passed → add break
+        console.log(`  Step 6: All checks passed, returning true`);
         return true;
     }
+    
     
     /**
      * Check if branch loops back to header (NOT an exit)
@@ -5577,19 +5594,31 @@ class FlowchartCompiler {
         visitedInPath.add(nodeId);
 
         // ===========================
-        // skip for-loop init nodes
+        // skip for-loop init nodes (only if we're actually compiling a for-loop)
         // ===========================
         if (this.isInitOfForLoop(nodeId)) {
-            console.log(`Skipping for-loop init node: ${nodeId}`);
-            // Add highlight for skipped init nodes
-            if (this.useHighlighting) {
-                code += this.emitHighlight(nodeId, indentLevel);
+            // Only skip if we're actually in a for-loop context (not a while loop)
+            const inForLoopContext = contextStack.some(ctx => {
+                if (!ctx.startsWith('loop_')) return false;
+                const headerId = ctx.replace('loop_', '');
+                const forInfo = this.detectForLoopPattern(headerId);
+                // Check if this loop is actually being compiled as a for-loop
+                // (not converted to while-else)
+                return forInfo && forInfo.initNodeId === nodeId;
+            });
+            
+            if (inForLoopContext) {
+                console.log(`Skipping for-loop init node: ${nodeId}`);
+                // Add highlight for skipped init nodes
+                if (this.useHighlighting) {
+                    code += this.emitHighlight(nodeId, indentLevel);
+                }
+                const succ = this.getAllSuccessors(nodeId);
+                for (const { nodeId: nxt } of succ) {
+                    code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
+                }
+                return code;
             }
-            const succ = this.getAllSuccessors(nodeId);
-            for (const { nodeId: nxt } of succ) {
-                code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
-            }
-            return code;
         }
 
         // ===========================
@@ -6526,6 +6555,7 @@ class FlowchartCompiler {
      * Compile if/else statement with support for elif
      */
     compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel, inLoopBody = false, inLoopHeader = false) {
+        console.log(`compileIfElse called for ${node.id}: inLoopBody=${inLoopBody}, contextStack=`, contextStack);
         // Check if we're inside a for-loop and if branches lead to increment nodes
         // This prevents increment statements from appearing in if/else branches inside for loops
         if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
@@ -6533,8 +6563,10 @@ class FlowchartCompiler {
             if (currentLoopCtx) {
                 const loopHeaderId = currentLoopCtx.replace('loop_', '');
                 const forInfo = this.detectForLoopPattern(loopHeaderId);
+                console.log(`compileIfElse ${node.id}: checking for-loop pattern, loopHeaderId=${loopHeaderId}, forInfo=`, forInfo);
                 
                 if (forInfo && forInfo.incrementNodeId) {
+                    console.log(`compileIfElse ${node.id}: for-loop increment check, incrementNodeId=${forInfo.incrementNodeId}`);
                     const incId = forInfo.incrementNodeId;
                     
                     // Check if one of the branches leads to the increment node
@@ -6547,14 +6579,52 @@ class FlowchartCompiler {
                         const indent = "    ".repeat(indentLevel);
                         let decisionCode = `${indent}if ${node.text}:\n`;
                         
+                        const ifContext = [...contextStack, `if_${node.id}`];
                         // Compile YES branch but stop before increment
+                        let ifCode = "";
                         if (yesLeadsToInc) {
-                            const ifCode = this.compileNodeUntil(yesId, incId, new Set([...visitedInPath]), [...contextStack, `if_${node.id}`], indentLevel + 1, inLoopBody, inLoopHeader);
-                            decisionCode += ifCode || `${indent}    pass\n`;
+                            ifCode = this.compileNodeUntil(yesId, incId, new Set([...visitedInPath]), ifContext, indentLevel + 1, inLoopBody, inLoopHeader);
                         } else {
-                            const ifCode = this.compileNode(yesId, new Set([...visitedInPath]), [...contextStack, `if_${node.id}`], indentLevel + 1, inLoopBody, inLoopHeader);
-                            decisionCode += ifCode || `${indent}    pass\n`;
+                            ifCode = this.compileNode(yesId, new Set([...visitedInPath]), ifContext, indentLevel + 1, inLoopBody, inLoopHeader);
                         }
+                        
+                        // Check if break should be added to YES branch (even though we're stopping before increment)
+                        const loopHeaderId = this.findCurrentLoopHeader(ifContext);
+                        console.log(`compileIfElse YES branch (for-loop increment path) for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
+                        if (inLoopBody || loopHeaderId) {
+                            if (loopHeaderId) {
+                                let loopType = this.getLoopType(loopHeaderId);
+                                if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
+                                    loopType = 'while_true_with_breaks';
+                                }
+
+                                let shouldBreak = this.breakManager.shouldAddBreak(
+                                    yesId,
+                                    loopHeaderId,
+                                    ifContext,
+                                    loopType,
+                                    null
+                                );
+                                console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}) [for-loop increment path]: ${shouldBreak}`);
+
+                                if (!shouldBreak) {
+                                    const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
+                                    const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
+                                    console.log(`Fallback check [for-loop increment path]: exits=${exits}, loopsBack=${loopsBack}`);
+                                    if (exits && !loopsBack) {
+                                        shouldBreak = true;
+                                    }
+                                }
+
+                                if (shouldBreak) {
+                                    console.log(`Adding break after YES branch (for-loop increment path) of ${node.id}`);
+                                    if (!ifCode.endsWith("\n")) ifCode += "\n";
+                                    ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+                                }
+                            }
+                        }
+                        
+                        decisionCode += ifCode || `${indent}    pass\n`;
                         
                         if (noId) {
                             decisionCode += `${indent}else:\n`;
@@ -6574,8 +6644,10 @@ class FlowchartCompiler {
             }
         }
 
+        console.log(`compileIfElse ${node.id}: past for-loop check, about to find convergence point`);
         // Find the convergence point AFTER the entire decision chain
         let convergencePoint = this.findCommonConvergencePoint(node.id, yesId, noId);
+        console.log(`compileIfElse ${node.id}: convergencePoint=${convergencePoint}, yesId=${yesId}, noId=${noId}`);
 
         // In compileIfElse, after finding convergencePoint:
         if (convergencePoint && convergencePoint === noId) {
@@ -6584,16 +6656,55 @@ class FlowchartCompiler {
             const indent = "    ".repeat(indentLevel);
             let code = `${indent}if ${node.text}:\n`;
 
+            const ifContext = [...contextStack, `if_${node.id}`];
             const ifCode = this.compileNodeUntil(
                 yesId,
                 convergencePoint,
                 new Set([...visitedInPath]),
-                [...contextStack, `if_${node.id}`],
+                ifContext,
                 indentLevel + 1,
                 inLoopBody,
                 inLoopHeader
             );
-            code += ifCode || `${indent}    pass\n`;
+            let finalIfCode = ifCode || `${indent}    pass\n`;
+
+            // Check if break should be added to YES branch
+            const loopHeaderId = this.findCurrentLoopHeader(ifContext);
+            console.log(`compileIfElse YES branch (convergence=noId) for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
+            if (inLoopBody || loopHeaderId) {
+                if (loopHeaderId) {
+                    let loopType = this.getLoopType(loopHeaderId);
+                    if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
+                        loopType = 'while_true_with_breaks';
+                    }
+
+                    let shouldBreak = this.breakManager.shouldAddBreak(
+                        yesId,
+                        loopHeaderId,
+                        ifContext,
+                        loopType,
+                        convergencePoint
+                    );
+                    console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}) [convergence=noId]: ${shouldBreak}`);
+
+                    if (!shouldBreak) {
+                        const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
+                        const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
+                        console.log(`Fallback check [convergence=noId]: exits=${exits}, loopsBack=${loopsBack}`);
+                        if (exits && !loopsBack) {
+                            shouldBreak = true;
+                        }
+                    }
+
+                    if (shouldBreak) {
+                        console.log(`Adding break after YES branch (convergence=noId) of ${node.id}`);
+                        if (!finalIfCode.endsWith("\n")) finalIfCode += "\n";
+                        finalIfCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+                    }
+                }
+            }
+
+            code += finalIfCode;
 
             // Compile convergence point AFTER if
             if (!code.endsWith("\n")) code += "\n";
@@ -6629,27 +6740,50 @@ class FlowchartCompiler {
             );
 
             // Use BreakManager to determine if break should be added
-            if (inLoopBody) {
-                const loopHeaderId = this.findCurrentLoopHeader(contextStack);
+            // Check both inLoopBody flag and contextStack for loop context
+            const loopHeaderId = this.findCurrentLoopHeader(ifContext);
+            console.log(`compileIfElse YES branch for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
+            if (inLoopBody || loopHeaderId) {
                 if (loopHeaderId) {
                     // Check if it's an implicit loop - if so, use while_true_with_breaks
                     let loopType = this.getLoopType(loopHeaderId);
                     if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
                         loopType = 'while_true_with_breaks';
                     }
-                    const shouldBreak = this.breakManager.shouldAddBreak(
+
+                    // Primary decision: BreakManager
+                    let shouldBreak = this.breakManager.shouldAddBreak(
                         yesId,
                         loopHeaderId,
-                        contextStack,
+                        ifContext,
                         loopType,
                         convergencePoint
                     );
+                    console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}): ${shouldBreak}`);
+
+                    // Fallback: simple structural check
+                    // "Does this YES branch reach END without ever returning to the loop header?"
+                    if (!shouldBreak) {
+                        const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
+                        const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
+                        console.log(`Fallback check: exits=${exits}, loopsBack=${loopsBack}`);
+                        if (exits && !loopsBack) {
+                            shouldBreak = true;
+                        }
+                    }
+
                     if (shouldBreak) {
+                        console.log(`Adding break after YES branch of ${node.id}`);
                         if (!ifCode.endsWith("\n")) ifCode += "\n";
                         ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
                     }
+                } else {
+                    console.log(`No loop header found in ifContext for ${node.id}`);
                 }
+            } else {
+                console.log(`Not in loop body and no loop header found for ${node.id}`);
             }
+
         } else {
             ifCode = this.compileNode(
                 yesId,
@@ -6661,27 +6795,50 @@ class FlowchartCompiler {
             );
 
             // Use BreakManager to determine if break should be added
-            if (inLoopBody) {
-                const loopHeaderId = this.findCurrentLoopHeader(contextStack);
+            // Check both inLoopBody flag and contextStack for loop context
+            const loopHeaderId = this.findCurrentLoopHeader(ifContext);
+            console.log(`compileIfElse YES branch (no convergence) for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
+            if (inLoopBody || loopHeaderId) {
                 if (loopHeaderId) {
                     // Check if it's an implicit loop - if so, use while_true_with_breaks
                     let loopType = this.getLoopType(loopHeaderId);
                     if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
                         loopType = 'while_true_with_breaks';
                     }
-                    const shouldBreak = this.breakManager.shouldAddBreak(
+
+                    // Primary decision: BreakManager
+                    let shouldBreak = this.breakManager.shouldAddBreak(
                         yesId,
                         loopHeaderId,
-                        contextStack,
+                        ifContext,
                         loopType,
-                        null // no convergence point in this branch
+                        convergencePoint
                     );
+                    console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}) [no convergence]: ${shouldBreak}`);
+
+                    // Fallback: simple structural check
+                    // "Does this YES branch reach END without ever returning to the loop header?"
+                    if (!shouldBreak) {
+                        const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
+                        const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
+                        console.log(`Fallback check [no convergence]: exits=${exits}, loopsBack=${loopsBack}`);
+                        if (exits && !loopsBack) {
+                            shouldBreak = true;
+                        }
+                    }
+
                     if (shouldBreak) {
+                        console.log(`Adding break after YES branch (no convergence) of ${node.id}`);
                         if (!ifCode.endsWith("\n")) ifCode += "\n";
                         ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
                     }
+                } else {
+                    console.log(`No loop header found in ifContext (no convergence) for ${node.id}`);
                 }
+            } else {
+                console.log(`Not in loop body and no loop header found (no convergence) for ${node.id}`);
             }
+
         }
 
         code += ifCode || `${indent}    pass\n`;
@@ -6738,27 +6895,42 @@ class FlowchartCompiler {
                     }
 
                     // Use BreakManager to determine if break should be added
-                    if (inLoopBody) {
-                        const loopHeader = this.findCurrentLoopHeader(contextStack);
+                    // Check both inLoopBody flag and contextStack for loop context
+                    const elseContext = [...contextStack, `else_${node.id}`];
+                    const loopHeader = this.findCurrentLoopHeader(elseContext);
+                    if (inLoopBody || loopHeader) {
                         if (loopHeader) {
                             // Check if it's an implicit loop - if so, use while_true_with_breaks
                             let loopType = this.getLoopType(loopHeader);
                             if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeader)) {
                                 loopType = 'while_true_with_breaks';
                             }
-                            const shouldBreak = this.breakManager.shouldAddBreak(
+
+                            // Primary decision: BreakManager
+                            let shouldBreak = this.breakManager.shouldAddBreak(
                                 noId,
                                 loopHeader,
-                                contextStack,
+                                elseContext,
                                 loopType,
                                 convergencePoint
                             );
+
+                            // Fallback: structural check for "exit to END"
+                            if (!shouldBreak) {
+                                const exits = this.breakManager.branchReachesEnd(noId, loopHeader);
+                                const loopsBack = this.breakManager.branchLoopsBackToHeader(noId, loopHeader);
+                                if (exits && !loopsBack) {
+                                    shouldBreak = true;
+                                }
+                            }
+
                             if (shouldBreak) {
                                 if (!elseCode.endsWith("\n")) elseCode += "\n";
                                 elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
                             }
                         }
                     }
+
 
                     code += elseCode || `${indent}    pass\n`;
                 }
@@ -6792,21 +6964,35 @@ class FlowchartCompiler {
                 }
 
                 // Use BreakManager to determine if break should be added
-                if (inLoopBody) {
-                    const loopHeader = this.findCurrentLoopHeader(contextStack);
+                // Check both inLoopBody flag and contextStack for loop context
+                const elseContext = [...contextStack, `else_${node.id}`];
+                const loopHeader = this.findCurrentLoopHeader(elseContext);
+                if (inLoopBody || loopHeader) {
                     if (loopHeader) {
                         // Check if it's an implicit loop - if so, use while_true_with_breaks
                         let loopType = this.getLoopType(loopHeader);
                         if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeader)) {
                             loopType = 'while_true_with_breaks';
                         }
-                        const shouldBreak = this.breakManager.shouldAddBreak(
+
+                        // Primary decision: BreakManager
+                        let shouldBreak = this.breakManager.shouldAddBreak(
                             noId,
                             loopHeader,
-                            contextStack,
+                            elseContext,
                             loopType,
                             convergencePoint
                         );
+
+                        // Fallback: structural check for "exit to END"
+                        if (!shouldBreak) {
+                            const exits = this.breakManager.branchReachesEnd(noId, loopHeader);
+                            const loopsBack = this.breakManager.branchLoopsBackToHeader(noId, loopHeader);
+                            if (exits && !loopsBack) {
+                                shouldBreak = true;
+                            }
+                        }
+
                         if (shouldBreak) {
                             if (!elseCode.endsWith("\n")) elseCode += "\n";
                             elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
