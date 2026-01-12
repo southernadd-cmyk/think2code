@@ -1652,13 +1652,14 @@ class EnhancedFlowAnalyzer extends FlowAnalyzer {
     analyze() {
         const basicAnalysis = super.analyze();
         this.loopClassifications = this.loopClassifier.classifyAllLoops();
-
+    
         return {
             ...basicAnalysis,
-            loopClassifications: this.loopClassifications,
-            loops: this.loopClassifications
+            loopClassifications: this.loopClassifications
+            // DO NOT overwrite basicAnalysis.loops
         };
     }
+    
     
     getLoopClassification(headerId) {
         return this.loopClassifications.get(headerId);
@@ -7202,8 +7203,30 @@ function generateCodeFromIR(irProgram, options = {}) {
 // Ensure compileWithPipeline is defined (like in old compiler)
 try {
     window.compileWithPipeline = function (nodes, connections, useHighlighting, debugMode = false) {
-        const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
-        return compiler.compile();
+        // PHASE 1 — Analysis
+        const analyzer = new EnhancedFlowAnalyzer(nodes, connections);
+        const analysis = analyzer.analyze();
+    
+        // Find start node
+        const startNode = nodes.find(n => n.type === 'start') || nodes[0];
+        const startId = startNode?.id || null;
+        if (!startId) return "";
+    
+        // PHASE 2 — IR
+        const irBuilder = new EnhancedIRBuilder(nodes, connections, analysis);
+        const ir = irBuilder.buildProgram(startId);
+    
+        // Optional debug
+        if (debugMode) {
+            console.log("IR object:", ir);
+            console.log("IR statements length:", ir?.statements?.length ?? 0);
+            console.log("IR statements:", (ir?.statements ?? []).map(s => s?.content));
+        }
+    
+        // PHASE 3 — Codegen
+        return generateCodeFromIR(ir, { useHighlighting });
+    
+    
     };
 
 window.FlowchartCompiler = FlowchartCompiler;

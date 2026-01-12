@@ -1,4 +1,30 @@
 window.FlowCode = window.FlowCode || {};
+
+// Embedded example flows to avoid CORS issues when running from file://
+// Currently embeds welcome.json; add more entries as needed.
+window.EMBEDDED_FLOWS = window.EMBEDDED_FLOWS || {
+    "welcome.json": {
+        "nodes": [
+            { "id": "n1", "type": "start", "x": 162, "y": 82, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+            { "id": "n2", "type": "output", "x": 127.4000244140625, "y": 213.40005493164062, "text": "\"Welcome\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+            { "id": "n3", "type": "var", "x": 393, "y": 127, "text": "app = \"FlowCode\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+            { "id": "n4", "type": "output", "x": 151.19998168945312, "y": 358.00006103515625, "text": "\"to\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+            { "id": "n5", "type": "output", "x": 399.60003662109375, "y": 310, "text": "app", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+            { "id": "n6", "type": "end", "x": 558.2000122070312, "y": 414.800048828125, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+        ],
+        "connections": [
+            { "from": "n1", "port": "next", "to": "n3" },
+            { "from": "n3", "port": "next", "to": "n2" },
+            { "from": "n2", "port": "next", "to": "n4" },
+            { "from": "n4", "port": "next", "to": "n5" },
+            { "from": "n5", "port": "next", "to": "n6" }
+        ],
+        "version": "3.0"
+    }
+};
+
+
+
 const ELBOW_GAP = 35;   // minimum distance from ports
 const GRID = 10;       // soft snap grid
 
@@ -233,6 +259,7 @@ viewportY: 0,
 minScale: 0.3,
 maxScale: 2.5,
 cancelExecution: false,
+debugMode: false,
 skulptTask: null,
 skModule: null,
 terminateByUser(reason = "PROGRAM TERMINATED BY USER") {
@@ -564,6 +591,14 @@ async loadExampleFromFile(filename) {
         this.terminateByUser("PROGRAM TERMINATED BY USER");
     }
     
+    // Use embedded example if available (avoids CORS issues on file://)
+    const embedded = (window.EMBEDDED_FLOWS && window.EMBEDDED_FLOWS[filename]) || null;
+    if (embedded) {
+        const clone = JSON.parse(JSON.stringify(embedded)); // shallow deep copy to avoid mutations
+        this.loadDiagramObject(clone);
+        return;
+    }
+
     try {
         const res = await fetch(`flows/${filename}`);
         if (!res.ok) {
@@ -831,6 +866,7 @@ const id = `n${this.nextId++}`;
     case 'output': text = 'x'; break;
     case 'process': text = 'x = x + 1'; break;
     case 'input': text = ''; varName = "x"; prompt = "\"Enter value\""; dtype = "int"; break;
+    case 'break': text = 'break'; break;
 }
 
         
@@ -1064,19 +1100,22 @@ path.setAttribute('d', dStr);
 }
 ,
 
-    updateCode() {
-        try {
-            const comp = new FlowchartCompiler(this.nodes, this.connections, false);
-            const execComp = new FlowchartCompiler(this.nodes, this.connections, true);
-            const code = comp.compile();
-            document.getElementById('code-python').innerText = code;
-            this.fullExecCode = execComp.compile();
-        } catch (error) {
-            console.error('Compilation error:', error);
-            document.getElementById('code-python').innerText = `# Compilation Error: ${error.message}\n# Check console for details.`;
-            this.fullExecCode = "";
-        }
-    },
+updateCode() {
+    try {
+        const code = window.compileWithPipeline(this.nodes, this.connections, false, false);
+        document.getElementById('code-python').innerText = code;
+
+        // exec version (with highlighting enabled)
+        this.fullExecCode = window.compileWithPipeline(this.nodes, this.connections, true, false);
+    } catch (error) {
+        console.error('Compilation error:', error);
+        document.getElementById('code-python').innerText =
+            `# Compilation Error: ${error.message}\n# Check console for details.`;
+        this.fullExecCode = "";
+    }
+},
+
+
 
     async runSim() {
 if (this.isRunning) return;
@@ -1834,17 +1873,27 @@ addDot(parent, cls, portType) {
     },
 
 
-    clearCanvas() { 
-        if(confirm("Clear all?")) { 
-            this.nodes=[]; 
-            this.connections=[]; 
-            this.selectedNodeId=null; 
-            document.getElementById('nodes-layer').innerHTML=""; 
-            document.getElementById('code-python').innerText=""; 
-            document.getElementById('console').innerHTML=""; 
-            this.drawConns(); 
-            this.updateCode(); 
-        } 
+    clearCanvas() {
+        if(confirm("Clear all?")) {
+            this.nodes=[];
+            this.connections=[];
+            this.selectedNodeId=null;
+            document.getElementById('nodes-layer').innerHTML="";
+            document.getElementById('code-python').innerText="";
+            document.getElementById('console').innerHTML="";
+            this.drawConns();
+            this.updateCode();
+        }
+    },
+
+    toggleDebug() {
+        this.debugMode = !this.debugMode;
+        const toggle = document.getElementById('debug-toggle');
+        if (toggle) {
+            toggle.checked = this.debugMode;
+        }
+        console.log(`[App] Debug mode ${this.debugMode ? 'enabled' : 'disabled'}`);
+        this.updateCode(); // Recompile with new debug setting
     }
 
 };
