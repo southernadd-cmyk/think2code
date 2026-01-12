@@ -1,0 +1,28 @@
+{
+                "nodes": [
+                    { "id": "n26", "type": "start", "x": 108, "y": 37.999996185302734, "text": "Start", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n27", "type": "var", "x": 140.14285278320312, "y": 127.99999618530273, "text": "attempts = 0", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n28", "type": "var", "x": 272.85711669921875, "y": 217.57140731811523, "text": "pin = 1234", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n29", "type": "decision", "x": -38.57147216796875, "y": 693.0000114440918, "text": "attempts < 3", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n30", "type": "input", "x": 203.4285888671875, "y": 597.428524017334, "text": "", "varName": "guess", "prompt": "\"Enter guess\"", "dtype": "str" },
+                    { "id": "n31", "type": "end", "x": 623, "y": 566.4285697937012, "text": "End", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n32", "type": "decision", "x": 398.0000305175781, "y": 810.2857627868652, "text": "guess == pin", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n33", "type": "output", "x": 45.28570556640625, "y": 1010.2857627868652, "text": "\"SUCCESS\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n34", "type": "process", "x": -70, "y": 353.14286041259766, "text": "attempts = attempts + 1", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n35", "type": "output", "x": 521.7142944335938, "y": 387.4285469055176, "text": "\"locked\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n26", "port": "next", "to": "n27" },
+                    { "from": "n27", "port": "next", "to": "n28" },
+                    { "from": "n28", "port": "next", "to": "n29" },
+                    { "from": "n29", "port": "yes", "to": "n30" },
+                    { "from": "n30", "port": "next", "to": "n32" },
+                    { "from": "n32", "port": "yes", "to": "n33" },
+                    { "from": "n33", "port": "next", "to": "n31" },
+                    { "from": "n32", "port": "no", "to": "n34" },
+                    { "from": "n34", "port": "next", "to": "n29" },
+                    { "from": "n29", "port": "no", "to": "n35" },
+                    { "from": "n35", "port": "next", "to": "n31" }
+                ],
+                "version": "3.0"
+}
