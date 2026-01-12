@@ -872,6 +872,9 @@ class LoopClassifier {
      */
     findProcessExitNodes(headerId, bodyNodes) {
         const exits = [];
+        // Convert to Set if it's an Array
+        const bodyNodesSet = bodyNodes instanceof Set ? bodyNodes : new Set(bodyNodes);
+        
         for (const nodeId of bodyNodes) {
             const node = this.nodes.find(n => n.id === nodeId);
             if (node && node.type === 'decision') {
@@ -879,7 +882,7 @@ class LoopClassifier {
                 const noBranch = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
 
                 for (const branch of [yesBranch, noBranch]) {
-                    if (branch && branch !== headerId && !bodyNodes.has(branch)) {
+                    if (branch && branch !== headerId && !bodyNodesSet.has(branch)) {
                         if (this.canReachEnd(branch)) {
                             exits.push(branch);
                         }
@@ -7203,30 +7206,10 @@ function generateCodeFromIR(irProgram, options = {}) {
 // Ensure compileWithPipeline is defined (like in old compiler)
 try {
     window.compileWithPipeline = function (nodes, connections, useHighlighting, debugMode = false) {
-        // PHASE 1 — Analysis
-        const analyzer = new EnhancedFlowAnalyzer(nodes, connections);
-        const analysis = analyzer.analyze();
-    
-        // Find start node
-        const startNode = nodes.find(n => n.type === 'start') || nodes[0];
-        const startId = startNode?.id || null;
-        if (!startId) return "";
-    
-        // PHASE 2 — IR
-        const irBuilder = new EnhancedIRBuilder(nodes, connections, analysis);
-        const ir = irBuilder.buildProgram(startId);
-    
-        // Optional debug
-        if (debugMode) {
-            console.log("IR object:", ir);
-            console.log("IR statements length:", ir?.statements?.length ?? 0);
-            console.log("IR statements:", (ir?.statements ?? []).map(s => s?.content));
-        }
-    
-        // PHASE 3 — Codegen
-        return generateCodeFromIR(ir, { useHighlighting });
-    
-    
+        // Use the old FlowchartCompiler which has all the latest fixes
+        // (implicit loop detection, break management, etc.)
+        const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
+        return compiler.compile();
     };
 
 window.FlowchartCompiler = FlowchartCompiler;
