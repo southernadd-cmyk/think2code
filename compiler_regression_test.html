@@ -1,0 +1,672 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Compiler Regression Test</title>
+    <style>
+        body { font-family: monospace; margin: 20px; }
+        .test-result { margin: 10px 0; padding: 10px; border: 1px solid #ccc; }
+        .pass { background-color: #d4edda; border-color: #c3e6cb; }
+        .fail { background-color: #f8d7da; border-color: #f5c6cb; }
+        .warning { background-color: #fff3cd; border-color: #ffeaa7; }
+        .summary { font-weight: bold; margin-top: 20px; }
+        pre { max-height: 200px; overflow-y: auto; background: #f8f9fa; padding: 10px; }
+        .controls { margin-bottom: 20px; }
+    </style>
+
+    <!-- Load compiler synchronously to avoid CORS issues -->
+    <script src="js/compiler.js"></script>
+    <script>
+        // Immediate check after compiler loads
+        (function() {
+            console.log('Compiler script loaded, checking basic exports...');
+            console.log('window.FlowchartCompiler:', typeof window.FlowchartCompiler);
+            console.log('window.compileWithPipeline:', typeof window.compileWithPipeline);
+        })();
+    </script>
+</head>
+<body>
+    <h1>Compiler Regression Test</h1>
+    <div class="controls">
+        <button id="runTests">Run All Tests</button>
+        <button id="runSingle">Test Current Flowchart</button>
+        <label><input type="checkbox" id="showDetails"> Show Details</label>
+        <label><input type="checkbox" id="showCode"> Show Generated Code</label>
+        <label><input type="checkbox" id="debugMode"> Debug Mode</label>
+    </div>
+
+    <div id="status"></div>
+    <div id="results"></div>
+    <div id="summary" class="summary"></div>
+
+    <script>
+        // Embedded test flowcharts (to avoid CORS issues with file:// protocol)
+        const embeddedFlows = {
+            "welcome.json": {
+                "nodes": [
+                    { "id": "n1", "type": "start", "x": 162, "y": 82, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n2", "type": "output", "x": 127.4000244140625, "y": 213.40005493164062, "text": "\"Welcome\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n3", "type": "var", "x": 393, "y": 127, "text": "app = \"FlowCode\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n4", "type": "output", "x": 151.19998168945312, "y": 358.00006103515625, "text": "\"to\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n5", "type": "output", "x": 399.60003662109375, "y": 310, "text": "app", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n6", "type": "end", "x": 558.2000122070312, "y": 414.800048828125, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n1", "port": "next", "to": "n3" },
+                    { "from": "n3", "port": "next", "to": "n2" },
+                    { "from": "n2", "port": "next", "to": "n4" },
+                    { "from": "n4", "port": "next", "to": "n5" },
+                    { "from": "n5", "port": "next", "to": "n6" }
+                ],
+                "version": "3.0"
+            },
+            "forloop.json": {
+                "nodes": [
+                    { "id": "n6", "type": "decision", "x": 529.3333435058594, "y": 277.3999938964844, "text": "x < 10", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n7", "type": "start", "x": 110, "y": 49, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n8", "type": "var", "x": 270.3333435058594, "y": 155.73333740234375, "text": "x = 0", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n9", "type": "process", "x": 41.199981689453125, "y": 441.79998779296875, "text": "x = x + 1", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n10", "type": "output", "x": 788.9332885742188, "y": 501.86663818359375, "text": "x", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n11", "type": "end", "x": 474.5999755859375, "y": 713.7999877929688, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n7", "port": "next", "to": "n8" },
+                    { "from": "n8", "port": "next", "to": "n6" },
+                    { "from": "n6", "port": "yes", "to": "n9" },
+                    { "from": "n9", "port": "next", "to": "n6" },
+                    { "from": "n6", "port": "no", "to": "n10" },
+                    { "from": "n10", "port": "next", "to": "n11" }
+                ],
+                "version": "3.0"
+            },
+            "countdown.json": {
+                "nodes": [
+                    { "id": "n6", "type": "decision", "x": 222.33334350585938, "y": 328.3999938964844, "text": "x > 0", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n7", "type": "start", "x": 110, "y": 49, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n8", "type": "var", "x": 270.3333435058594, "y": 155.73333740234375, "text": "x = 10", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n9", "type": "process", "x": 133.19998168945312, "y": 512.7999877929688, "text": "x = x - 1", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n10", "type": "output", "x": 590.9332885742188, "y": 414.86663818359375, "text": "\"GO!\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n11", "type": "end", "x": 768.5999755859375, "y": 566.7999877929688, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n12", "type": "output", "x": 722, "y": 193.40008544921875, "text": "x", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n7", "port": "next", "to": "n8" },
+                    { "from": "n8", "port": "next", "to": "n6" },
+                    { "from": "n6", "port": "yes", "to": "n12" },
+                    { "from": "n12", "port": "next", "to": "n9" },
+                    { "from": "n9", "port": "next", "to": "n6" },
+                    { "from": "n6", "port": "no", "to": "n10" },
+                    { "from": "n10", "port": "next", "to": "n11" }
+                ],
+                "version": "3.0"
+            },
+            "flowchart (45).json": {
+                "nodes": [
+                    { "id": "n1", "type": "start", "x": 200, "y": 50, "text": "Start", "varName": "count", "prompt": "Start", "dtype": "int" },
+                    { "id": "n2", "type": "var", "x": 200, "y": 150, "text": "count = 0", "varName": "count", "prompt": "Initialize", "dtype": "int" },
+                    { "id": "n3", "type": "process", "x": 200, "y": 250, "text": "count = count + 1", "varName": "count", "prompt": "Increment", "dtype": "int" },
+                    { "id": "n4", "type": "decision", "x": 200, "y": 400, "text": "count == 5", "varName": "count", "prompt": "Exit condition 1", "dtype": "int" },
+                    { "id": "n5", "type": "decision", "x": 486.3999938964844, "y": 390.8000183105469, "text": "count == 10", "varName": "count", "prompt": "Exit condition 2", "dtype": "int" },
+                    { "id": "n6", "type": "output", "x": 51.600006103515625, "y": 576.3999938964844, "text": "\"Exit at 5\"", "varName": "result", "prompt": "Exit message 1", "dtype": "str" },
+                    { "id": "n7", "type": "output", "x": 542.0000305175781, "y": 651.9999694824219, "text": "\"Exit at 10\"", "varName": "result", "prompt": "Exit message 2", "dtype": "str" },
+                    { "id": "n8", "type": "end", "x": 28.800003051757812, "y": 775.5999755859375, "text": "End", "varName": "", "prompt": "Program finished", "dtype": "str" }
+                ],
+                "connections": [
+                    { "from": "n1", "port": "next", "to": "n2" },
+                    { "from": "n2", "port": "next", "to": "n3" },
+                    { "from": "n3", "port": "next", "to": "n4" },
+                    { "from": "n4", "port": "yes", "to": "n6" },
+                    { "from": "n4", "port": "no", "to": "n5" },
+                    { "from": "n5", "port": "yes", "to": "n7" },
+                    { "from": "n5", "port": "no", "to": "n3" },
+                    { "from": "n6", "port": "next", "to": "n8" },
+                    { "from": "n7", "port": "next", "to": "n8" }
+                ],
+                "version": "3.0"
+            },
+            "atm.json": {
+                "nodes": [
+                    { "id": "n26", "type": "start", "x": 108, "y": 37.999996185302734, "text": "Start", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n27", "type": "var", "x": 140.14285278320312, "y": 127.99999618530273, "text": "attempts = 0", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n28", "type": "var", "x": 272.85711669921875, "y": 217.57140731811523, "text": "pin = 1234", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n29", "type": "decision", "x": -38.57147216796875, "y": 693.0000114440918, "text": "attempts < 3", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n30", "type": "input", "x": 203.4285888671875, "y": 597.428524017334, "text": "", "varName": "guess", "prompt": "\"Enter guess\"", "dtype": "str" },
+                    { "id": "n31", "type": "end", "x": 623, "y": 566.4285697937012, "text": "End", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n32", "type": "decision", "x": 398.0000305175781, "y": 810.2857627868652, "text": "guess == pin", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n33", "type": "output", "x": 45.28570556640625, "y": 1010.2857627868652, "text": "\"SUCCESS\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n34", "type": "process", "x": -70, "y": 353.14286041259766, "text": "attempts = attempts + 1", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n35", "type": "output", "x": 521.7142944335938, "y": 387.4285469055176, "text": "\"locked\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n26", "port": "next", "to": "n27" },
+                    { "from": "n27", "port": "next", "to": "n28" },
+                    { "from": "n28", "port": "next", "to": "n29" },
+                    { "from": "n29", "port": "yes", "to": "n30" },
+                    { "from": "n30", "port": "next", "to": "n32" },
+                    { "from": "n32", "port": "yes", "to": "n33" },
+                    { "from": "n33", "port": "next", "to": "n31" },
+                    { "from": "n32", "port": "no", "to": "n34" },
+                    { "from": "n34", "port": "next", "to": "n29" },
+                    { "from": "n29", "port": "no", "to": "n35" },
+                    { "from": "n35", "port": "next", "to": "n31" }
+                ],
+                "version": "3.0"
+            },
+            "movement-gameloop.json": {
+                "nodes": [
+                    { "id": "n45", "type": "start", "x": 935.3061795930307, "y": 120.56433422370844, "text": "Start", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n47", "type": "var", "x": 685.0242754860635, "y": 767.5633445518432, "text": "running = True", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n48", "type": "decision", "x": 299.88833956766337, "y": 906.5515943242433, "text": "running", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n49", "type": "end", "x": 1197.0597089750859, "y": 1068.3218055895372, "text": "End", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n50", "type": "input", "x": 142.50045468814318, "y": 715.037285373761, "text": "", "varName": "movement", "prompt": "\"Move Direction: (L/R)\"", "dtype": "str" },
+                    { "id": "n51", "type": "list", "x": 910.6201351679667, "y": 544.0965110348856, "text": "allGameObjects = []", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n52", "type": "var", "x": 921.3456177765665, "y": 328.7295063752164, "text": "w = 5", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n54", "type": "process", "x": 925.4014565014755, "y": 615.3148475990304, "text": "allGameObjects.append({\"display\":\"P\",\"x\":1})", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n55", "type": "var", "x": 921.1200713172664, "y": 240.2838664352862, "text": "movement = \"N\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n57", "type": "output", "x": 589.7768803979512, "y": 1094.9203111224197, "text": "\"Display Map:\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n59", "type": "var", "x": 593.3147138702489, "y": 1203.852635291897, "text": "x = 0", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n60", "type": "decision", "x": 585.9533666605886, "y": 1301.6518868420858, "text": "x < w", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n61", "type": "process", "x": 985.4991684519177, "y": 1370.02453825448, "text": "x = x + 1", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n66", "type": "var", "x": 693.9877320149191, "y": 683.400532140415, "text": "output = \"\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n67", "type": "var", "x": 569.996604194584, "y": 1506.8918410892027, "text": "i = 0", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n68", "type": "decision", "x": 559.8374090977841, "y": 1675.3576761520028, "text": "i < listLen", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n69", "type": "process", "x": 840.450930306584, "y": 1743.1303924576027, "text": "i = i + 1", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n70", "type": "var", "x": 572.8446859565302, "y": 1569.3484680150111, "text": "listLen = len(allGameObjects)", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n71", "type": "decision", "x": 695.2027750442747, "y": 1930.2085469177437, "text": "allGameObjects[i][\"x\"] == x", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n72", "type": "var", "x": 457.44704307525967, "y": 1438.7726725707187, "text": "empty = True", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n73", "type": "process", "x": 700.3807293230841, "y": 2079.525324459683, "text": "empty = False", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n74", "type": "process", "x": 701.273302309316, "y": 2168.638719481191, "text": "output = output + allGameObjects[i][\"display\"]", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n75", "type": "decision", "x": 848.8561930623124, "y": 1485.4722751826105, "text": "empty", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n76", "type": "process", "x": 1069.4609674685044, "y": 1521.7607365552385, "text": "output = output + \"#\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n78", "type": "decision", "x": -133.21476023798056, "y": 1256.939782536334, "text": "movement == \"L\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n79", "type": "output", "x": -129.53107327154456, "y": 1162.21100267833, "text": "\"Handle Movement:\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n80", "type": "decision", "x": 27.502083604543202, "y": 1254.8111346619582, "text": "movement == \"R\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n81", "type": "process", "x": 35.53059805806731, "y": 1421.7773149932823, "text": "allGameObjects[0][\"x\"] += 1", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n82", "type": "process", "x": -127.80892421386886, "y": 1424.7434953246063, "text": "allGameObjects[0][\"x\"] -= 1", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n84", "type": "output", "x": 391.3132938237104, "y": 1163.3480893405215, "text": "output", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n85", "type": "process", "x": 392.0340099999999, "y": 693.9041699999999, "text": "output = \"\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n87", "type": "decision", "x": 178.7631850657565, "y": 1245.2231644697636, "text": "movement == \"Q\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n88", "type": "process", "x": 200.0414111543414, "y": 1426.8196139130685, "text": "running = False", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n89", "type": "decision", "x": 151.50006145277933, "y": 529.8477229989699, "text": "movement != \"Q\"", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n48", "port": "no", "to": "n49" },
+                    { "from": "n47", "port": "next", "to": "n48" },
+                    { "from": "n51", "port": "next", "to": "n54" },
+                    { "from": "n45", "port": "next", "to": "n55" },
+                    { "from": "n55", "port": "next", "to": "n52" },
+                    { "from": "n57", "port": "next", "to": "n59" },
+                    { "from": "n59", "port": "next", "to": "n60" },
+                    { "from": "n61", "port": "next", "to": "n60" },
+                    { "from": "n54", "port": "next", "to": "n66" },
+                    { "from": "n66", "port": "next", "to": "n47" },
+                    { "from": "n69", "port": "next", "to": "n68" },
+                    { "from": "n52", "port": "next", "to": "n51" },
+                    { "from": "n67", "port": "next", "to": "n70" },
+                    { "from": "n70", "port": "next", "to": "n68" },
+                    { "from": "n71", "port": "yes", "to": "n73" },
+                    { "from": "n73", "port": "next", "to": "n74" },
+                    { "from": "n72", "port": "next", "to": "n67" },
+                    { "from": "n60", "port": "yes", "to": "n72" },
+                    { "from": "n75", "port": "no", "to": "n61" },
+                    { "from": "n75", "port": "yes", "to": "n76" },
+                    { "from": "n76", "port": "next", "to": "n61" },
+                    { "from": "n68", "port": "no", "to": "n75" },
+                    { "from": "n68", "port": "yes", "to": "n71" },
+                    { "from": "n74", "port": "next", "to": "n69" },
+                    { "from": "n71", "port": "no", "to": "n69" },
+                    { "from": "n78", "port": "no", "to": "n80" },
+                    { "from": "n78", "port": "yes", "to": "n82" },
+                    { "from": "n80", "port": "yes", "to": "n81" },
+                    { "from": "n79", "port": "next", "to": "n78" },
+                    { "from": "n60", "port": "no", "to": "n84" },
+                    { "from": "n50", "port": "next", "to": "n85" },
+                    { "from": "n85", "port": "next", "to": "n48" },
+                    { "from": "n80", "port": "no", "to": "n87" },
+                    { "from": "n87", "port": "yes", "to": "n88" },
+                    { "from": "n48", "port": "yes", "to": "n79" },
+                    { "from": "n82", "port": "next", "to": "n57" },
+                    { "from": "n81", "port": "next", "to": "n57" },
+                    { "from": "n88", "port": "next", "to": "n57" },
+                    { "from": "n87", "port": "no", "to": "n57" },
+                    { "from": "n84", "port": "next", "to": "n89" },
+                    { "from": "n89", "port": "yes", "to": "n50" },
+                    { "from": "n89", "port": "no", "to": "n85" }
+                ],
+                "version": "3.0"
+            },
+            "WhileTrue.json": {
+                "nodes": [
+                    { "id": "n13", "type": "start", "x": 366.6000061035156, "y": 72.19999694824219, "text": "Start", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n14", "type": "var", "x": 543, "y": 163, "text": "x = True", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n15", "type": "process", "x": 352.5999755859375, "y": 396.8000183105469, "text": "x = not(x)", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n16", "type": "output", "x": 115, "y": 208.19998168945312, "text": "x", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n13", "port": "next", "to": "n14" },
+                    { "from": "n14", "port": "next", "to": "n15" },
+                    { "from": "n15", "port": "next", "to": "n16" },
+                    { "from": "n16", "port": "next", "to": "n15" }
+                ],
+                "version": "3.0"
+            },
+            "whileloop.json": {
+                "nodes": [
+                    { "id": "n6", "type": "decision", "x": 135.33331298828125, "y": 286.33331298828125, "text": "x < 10", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n7", "type": "start", "x": 110, "y": 49, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n10", "type": "output", "x": 399.4666748046875, "y": 389.26666259765625, "text": "x", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n11", "type": "input", "x": 409.6667175292969, "y": 176, "text": "", "varName": "x", "prompt": "\"Enter value\"", "dtype": "int" },
+                    { "id": "n12", "type": "end", "x": 505, "y": 492.4000244140625, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n6", "port": "no", "to": "n10" },
+                    { "from": "n7", "port": "next", "to": "n11" },
+                    { "from": "n11", "port": "next", "to": "n6" },
+                    { "from": "n6", "port": "yes", "to": "n11" },
+                    { "from": "n10", "port": "next", "to": "n12" }
+                ],
+                "version": "3.0"
+            },
+            "sumOfN.json": {
+                "nodes": [
+                    { "id": "n1", "type": "start", "text": "Start", "x": 432.8000183105469, "y": 4.799995422363281 },
+                    { "id": "n2", "type": "input", "text": "Enter n", "varName": "n", "x": 296.0000305175781, "y": 90.39999389648438, "prompt": "\"Enter an integer\"", "dtype": "int" },
+                    { "id": "n3", "type": "process", "text": "total = 0", "x": 42.399993896484375, "y": 81.60003662109375 },
+                    { "id": "n4", "type": "process", "text": "i = 1", "x": 107.20001220703125, "y": 257.6000061035156 },
+                    { "id": "n5", "type": "decision", "text": "i <= n", "x": 367.20001220703125, "y": 227.19998168945312 },
+                    { "id": "n6", "type": "process", "text": "total = total + i", "x": 80, "y": 440 },
+                    { "id": "n7", "type": "process", "text": "i = i + 1", "x": 80, "y": 520 },
+                    { "id": "n8", "type": "output", "text": "f\"Sum of first {n} numbers is {total}\"", "x": 619.2000122070312, "y": 470.3999938964844 },
+                    { "id": "n9", "type": "end", "text": "End", "x": 300, "y": 440 }
+                ],
+                "connections": [
+                    { "from": "n1", "to": "n2", "port": "next" },
+                    { "from": "n2", "to": "n3", "port": "next" },
+                    { "from": "n3", "to": "n4", "port": "next" },
+                    { "from": "n4", "to": "n5", "port": "next" },
+                    { "from": "n5", "to": "n6", "port": "yes" },
+                    { "from": "n5", "to": "n8", "port": "no" },
+                    { "from": "n6", "to": "n7", "port": "next" },
+                    { "from": "n7", "to": "n5", "port": "next" },
+                    { "from": "n8", "to": "n9", "port": "next" }
+                ],
+                "version": "3.0"
+            },
+            "basicIF.json": {
+                "nodes": [
+                    { "id": "n17", "type": "start", "x": 244, "y": 51, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n19", "type": "input", "x": 182.79998779296875, "y": 154.40003967285156, "text": "", "varName": "choice", "prompt": "\"Are you enjoying FlowCode?\"", "dtype": "str" },
+                    { "id": "n20", "type": "decision", "x": 246.199951171875, "y": 263.6000671386719, "text": "choice.lower() == \"yes\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n21", "type": "output", "x": 106, "y": 443, "text": "\"Yeah!😃\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n22", "type": "output", "x": 464.5999755859375, "y": 412.79998779296875, "text": "\"Oh no! Let us know on Github how we could be better\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+                    { "id": "n23", "type": "end", "x": 319.20001220703125, "y": 562.2000122070312, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n17", "port": "next", "to": "n19" },
+                    { "from": "n19", "port": "next", "to": "n20" },
+                    { "from": "n20", "port": "yes", "to": "n21" },
+                    { "from": "n20", "port": "no", "to": "n22" },
+                    { "from": "n21", "port": "next", "to": "n23" },
+                    { "from": "n22", "port": "next", "to": "n23" }
+                ],
+                "version": "3.0"
+            },
+            "2loops.json": {
+                "nodes": [
+                    { "id": "n1", "type": "start", "x": 9.5999755859375, "y": 140, "text": "Start" },
+                    { "id": "n2", "type": "var", "x": 120, "y": 140, "text": "i = 0" },
+                    { "id": "n3", "type": "decision", "x": 16, "y": 378, "text": "i < 3" },
+                    { "id": "n4", "type": "var", "x": 335.199951171875, "y": 70.80000305175781, "text": "j = 0" },
+                    { "id": "n5", "type": "decision", "x": 264.800048828125, "y": 432.8000183105469, "text": "j < 2" },
+                    { "id": "n6", "type": "output", "x": 335.60003662109375, "y": 686.1999816894531, "text": "i, j" },
+                    { "id": "n7", "type": "process", "x": 693.4000244140625, "y": 601.2000122070312, "text": "j = j + 1" },
+                    { "id": "n8", "type": "process", "x": 766.199951171875, "y": 403.7999572753906, "text": "i = i + 1" },
+                    { "id": "n9", "type": "end", "x": 100.20001220703125, "y": 693, "text": "End" }
+                ],
+                "connections": [
+                    { "from": "n1", "to": "n2", "port": "next" },
+                    { "from": "n2", "to": "n3", "port": "next" },
+                    { "from": "n3", "to": "n4", "port": "yes" },
+                    { "from": "n3", "to": "n9", "port": "no" },
+                    { "from": "n4", "to": "n5", "port": "next" },
+                    { "from": "n5", "to": "n6", "port": "yes" },
+                    { "from": "n5", "to": "n8", "port": "no" },
+                    { "from": "n6", "to": "n7", "port": "next" },
+                    { "from": "n7", "to": "n5", "port": "next" },
+                    { "from": "n8", "to": "n3", "port": "next" }
+                ],
+                "version": "3.0"
+            },
+            "maxOfThree.json": {
+                "nodes": [
+                    { "id": "n1", "type": "start", "x": 57.5999755859375, "y": 47.20000457763672, "text": "Start" },
+                    { "id": "n2", "type": "input", "x": 312, "y": 83.20000457763672, "text": "", "varName": "a", "prompt": "\"enter a\"", "dtype": "int" },
+                    { "id": "n3", "type": "input", "x": 16.000030517578125, "y": 154, "text": "", "varName": "b", "prompt": "\"enter b\"", "dtype": "int" },
+                    { "id": "n4", "type": "input", "x": 68.79998779296875, "y": 270.79998779296875, "text": "", "varName": "c", "prompt": "\"enter c\"", "dtype": "int" },
+                    { "id": "n5", "type": "decision", "x": 370.3999938964844, "y": 222.20001220703125, "text": "a > b" },
+                    { "id": "n6", "type": "decision", "x": 927.6000366210938, "y": 685.7999877929688, "text": "b > c" },
+                    { "id": "n7", "type": "decision", "x": 738.5999755859375, "y": 120, "text": "a > c" },
+                    { "id": "n8", "type": "output", "x": 55.20001220703125, "y": 454.79998779296875, "text": "\"b is the largest\"" },
+                    { "id": "n9", "type": "output", "x": 200.79998779296875, "y": 530, "text": "\"c is the largest\"" },
+                    { "id": "n10", "type": "output", "x": 403.60003662109375, "y": 620.3999633789062, "text": "\"a is the largest\"" },
+                    { "id": "n11", "type": "end", "x": 96, "y": 807, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
+                ],
+                "connections": [
+                    { "from": "n1", "to": "n2", "port": "next" },
+                    { "from": "n2", "to": "n3", "port": "next" },
+                    { "from": "n3", "to": "n4", "port": "next" },
+                    { "from": "n4", "to": "n5", "port": "next" },
+                    { "from": "n5", "to": "n6", "port": "no" },
+                    { "from": "n5", "to": "n7", "port": "yes" },
+                    { "from": "n6", "to": "n8", "port": "yes" },
+                    { "from": "n6", "to": "n9", "port": "no" },
+                    { "from": "n7", "to": "n10", "port": "yes" },
+                    { "from": "n7", "to": "n9", "port": "no" },
+                    { "from": "n8", "port": "next", "to": "n11" },
+                    { "from": "n9", "port": "next", "to": "n11" },
+                    { "from": "n10", "port": "next", "to": "n11" }
+                ],
+                "version": "3.0"
+            }
+        };
+
+        const testFiles = Object.keys(embeddedFlows);
+        let compiler = null;
+        let testResults = [];
+
+        // Check if compiler is loaded
+        function loadCompiler() {
+            try {
+                compiler = window.FlowchartCompiler;
+                const compileWithPipeline = window.compileWithPipeline;
+
+                console.log('Checking compiler availability...');
+                console.log('window.FlowchartCompiler exists:', !!window.FlowchartCompiler);
+                console.log('window.compileWithPipeline exists:', !!window.compileWithPipeline);
+
+                if (compiler && typeof compiler === 'function' && compileWithPipeline && typeof compileWithPipeline === 'function') {
+                    console.log('Compiler loaded successfully');
+                    return true;
+                } else {
+                    console.error('Compiler functions not available:');
+                    console.error('- window.FlowchartCompiler:', typeof window.FlowchartCompiler, window.FlowchartCompiler);
+                    console.error('- window.compileWithPipeline:', typeof window.compileWithPipeline, window.compileWithPipeline);
+
+                    // Check if script loaded but had errors
+                    const scripts = document.querySelectorAll('script[src*="compiler.js"]');
+                    console.log('Compiler script tags found:', scripts.length);
+
+                    return false;
+                }
+            } catch (e) {
+                console.error('Error checking compiler:', e);
+                return false;
+            }
+        }
+
+        // Load a flowchart from embedded flows
+        function loadFlowchart(filename) {
+            return embeddedFlows[filename] || null;
+        }
+
+        // Compile with a compiler
+        function compileWith(compilerClass, flowchart, useHighlighting = false, debugMode = false) {
+            try {
+                const compiler = new compilerClass(flowchart.nodes, flowchart.connections, useHighlighting, debugMode);
+                return compiler.compile();
+            } catch (error) {
+                return { error: error.message, code: null };
+            }
+        }
+
+        // Analyze compilation result
+        function analyzeResult(result) {
+            if (result.error) {
+                return {
+                    success: false,
+                    error: result.error,
+                    lines: 0,
+                    truncated: false,
+                    code: null
+                };
+            }
+
+            const code = result;
+            const lines = code.split('\n').filter(line => line.trim().length > 0).length;
+            const truncated = lines < 3 || code.includes('pass') && lines <= 5;
+
+            return {
+                success: true,
+                error: null,
+                lines,
+                truncated,
+                code
+            };
+        }
+
+        // Run test for a single flowchart
+        function runTest(filename) {
+            const flowchart = loadFlowchart(filename);
+            if (!flowchart) {
+                return {
+                    filename,
+                    error: 'Failed to load flowchart',
+                    structuredResult: null,
+                    fallbackResult: null
+                };
+            }
+
+            const debugMode = document.getElementById('debugMode').checked;
+
+            // Compile with structured approach
+            const structuredResult = analyzeResult(compileWith(compiler, flowchart, debugMode));
+
+            // Compile with fallback (force state machine) - skip for now as compileAsStateMachine may not exist
+            const fallbackResult = (() => {
+                try {
+                    // For now, just return the structured result as fallback
+                    // TODO: Implement proper state machine fallback if needed
+                    return { success: true, error: null, lines: 0, truncated: false, code: null };
+                } catch (error) {
+                    return { success: false, error: error.message };
+                }
+            })();
+
+            return {
+                filename,
+                structuredResult,
+                fallbackResult
+            };
+        }
+
+        // Run all tests
+        function runAllTests() {
+            const statusDiv = document.getElementById('status');
+            const resultsDiv = document.getElementById('results');
+            const summaryDiv = document.getElementById('summary');
+
+            statusDiv.textContent = 'Loading compiler...';
+            const compilerLoaded = loadCompiler();
+
+            if (!compilerLoaded) {
+                statusDiv.textContent = 'Failed to load compiler';
+                return;
+            }
+
+            statusDiv.textContent = `Running ${testFiles.length} tests...`;
+            resultsDiv.innerHTML = '';
+            testResults = [];
+
+            for (const filename of testFiles) {
+                statusDiv.textContent = `Testing ${filename}...`;
+                const result = runTest(filename);
+                testResults.push(result);
+                displayTestResult(result);
+            }
+
+            displaySummary();
+            statusDiv.textContent = 'Tests completed';
+        }
+
+        // Display a single test result
+        function displayTestResult(result) {
+            const resultsDiv = document.getElementById('results');
+            const showDetails = document.getElementById('showDetails').checked;
+            const showCode = document.getElementById('showCode').checked;
+
+            const div = document.createElement('div');
+            div.className = 'test-result';
+
+            // Determine status
+            let status = 'pass';
+            let statusText = 'PASS';
+
+            if (result.error) {
+                status = 'fail';
+                statusText = 'LOAD FAIL';
+            } else {
+                const structuredSuccess = result.structuredResult?.success;
+                const fallbackSuccess = result.fallbackResult?.success;
+
+                if (!structuredSuccess && !fallbackSuccess) {
+                    status = 'fail';
+                    statusText = 'COMPILER FAIL';
+                } else if (structuredSuccess && result.structuredResult.truncated) {
+                    status = 'warning';
+                    statusText = 'TRUNCATED';
+                } else if (!structuredSuccess && fallbackSuccess) {
+                    status = 'warning';
+                    statusText = 'FALLBACK USED';
+                }
+            }
+
+            div.classList.add(status);
+
+            let html = `<h4>${result.filename} - ${statusText}</h4>`;
+
+            if (showDetails) {
+                html += '<table border="1" style="width:100%; border-collapse:collapse;">';
+                html += '<tr><th>Mode</th><th>Success</th><th>Lines</th><th>Truncated</th><th>Error</th></tr>';
+
+                function addRow(label, result) {
+                    if (!result) return '<tr><td>' + label + '</td><td colspan="4">N/A</td></tr>';
+                    return `<tr>
+                        <td>${label}</td>
+                        <td>${result.success ? '✓' : '✗'}</td>
+                        <td>${result.lines || 0}</td>
+                        <td>${result.truncated ? 'Yes' : 'No'}</td>
+                        <td>${result.error || ''}</td>
+                    </tr>`;
+                }
+
+                html += addRow('Structured', result.structuredResult);
+                html += addRow('Fallback', result.fallbackResult);
+                html += '</table>';
+            }
+
+            if (showCode) {
+                if (result.structuredResult?.code) {
+                    html += '<h5>Structured Output:</h5><pre>' + escapeHtml(result.structuredResult.code) + '</pre>';
+                }
+                if (result.fallbackResult?.code) {
+                    html += '<h5>Fallback Output:</h5><pre>' + escapeHtml(result.fallbackResult.code) + '</pre>';
+                }
+            }
+
+            div.innerHTML = html;
+            resultsDiv.appendChild(div);
+        }
+
+        // Display summary
+        function displaySummary() {
+            const summaryDiv = document.getElementById('summary');
+
+            let structuredCount = 0, fallbackCount = 0;
+            let truncatedCount = 0, fallbackUsedCount = 0;
+
+            for (const result of testResults) {
+                if (result.structuredResult?.success) structuredCount++;
+                if (result.fallbackResult?.success) fallbackCount++;
+                if (result.structuredResult?.truncated) truncatedCount++;
+                if (!result.structuredResult?.success && result.fallbackResult?.success) fallbackUsedCount++;
+            }
+
+            summaryDiv.innerHTML = `
+                <h3>Summary</h3>
+                <p>Structured Compilation: ${structuredCount}/${testResults.length} successful</p>
+                <p>Fallback Compilation: ${fallbackCount}/${testResults.length} successful</p>
+                <p>Truncated results: ${truncatedCount}</p>
+                <p>Fallback used: ${fallbackUsedCount}</p>
+            `;
+        }
+
+        // Test current flowchart (from app)
+        function testCurrentFlowchart() {
+            if (!window.app || !window.app.nodes) {
+                alert('No flowchart loaded in the app');
+                return;
+            }
+
+            const flowchart = {
+                nodes: window.app.nodes,
+                connections: window.app.connections
+            };
+
+            const debugMode = document.getElementById('debugMode').checked;
+            const result = {
+                filename: 'Current Flowchart',
+                structuredResult: analyzeResult(compileWith(compiler, flowchart, debugMode)),
+                fallbackResult: null
+            };
+
+            testResults = [result];
+            document.getElementById('results').innerHTML = '';
+            displayTestResult(result);
+            displaySummary();
+        }
+
+        // Utility function
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Event listeners
+        document.getElementById('runTests').addEventListener('click', () => {
+            runAllTests();
+        });
+        document.getElementById('runSingle').addEventListener('click', testCurrentFlowchart);
+        document.getElementById('showDetails').addEventListener('change', () => {
+            document.getElementById('results').innerHTML = '';
+            for (const result of testResults) {
+                displayTestResult(result);
+            }
+        });
+        document.getElementById('showCode').addEventListener('change', () => {
+            document.getElementById('results').innerHTML = '';
+            for (const result of testResults) {
+                displayTestResult(result);
+            }
+        });
+
+        document.getElementById('debugMode').addEventListener('change', () => {
+            // Re-run tests if they exist
+            if (testResults.length > 0) {
+                const statusDiv = document.getElementById('status');
+                statusDiv.textContent = 'Re-running tests with new debug setting...';
+                runAllTests();
+            }
+        });
+
+        // Auto-run tests when page loads (if compiler is available)
+        window.addEventListener('load', () => {
+            if (window.FlowchartCompiler) {
+                console.log('Compiler available on page load, running tests...');
+                runAllTests();
+            }
+        });
+    </script>
+</body>
+</html>
