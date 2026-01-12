@@ -5596,31 +5596,19 @@ class FlowchartCompiler {
         // ===========================
         // skip for-loop init nodes (only if we're actually compiling a for-loop)
         // ===========================
-        if (this.isInitOfForLoop(nodeId)) {
-            // Only skip if we're actually in a for-loop context (not a while loop)
-            const inForLoopContext = contextStack.some(ctx => {
-                if (!ctx.startsWith('loop_')) return false;
-                const headerId = ctx.replace('loop_', '');
-                const forInfo = this.detectForLoopPattern(headerId);
-                // Check if this loop is actually being compiled as a for-loop
-                // (not converted to while-else)
-                return forInfo && forInfo.initNodeId === nodeId;
-            });
-            
-            if (inForLoopContext) {
-                console.log(`Skipping for-loop init node: ${nodeId}`);
-                // Add highlight for skipped init nodes
-                if (this.useHighlighting) {
-                    code += this.emitHighlight(nodeId, indentLevel);
-                }
-                const succ = this.getAllSuccessors(nodeId);
-                for (const { nodeId: nxt } of succ) {
-                    code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
-                }
-                return code;
-            }
-        }
-
+if (this.isInitOfForLoop(nodeId, contextStack)) {
+    console.log(`Skipping for-loop init node: ${nodeId} (${node.text})`);
+    // Add highlight for skipped init nodes
+    if (this.useHighlighting) {
+        code += this.emitHighlight(nodeId, indentLevel);
+    }
+    // Skip to successor
+    const succ = this.getAllSuccessors(nodeId);
+    for (const { nodeId: nxt } of succ) {
+        code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
+    }
+    return code;
+}
         // ===========================
         // skip nodes marked in nodesToSkip
         // ===========================
@@ -5636,20 +5624,43 @@ class FlowchartCompiler {
         // ===========================
         // Skip increment nodes in for-loops
         // ===========================
-        if (node.type === 'process' && node.text) {
-            const incrementPattern = /^(\w+)\s*=\s*\1\s*[+-]\s*\d+/;
-            if (incrementPattern.test(node.text)) {
-                // Check if we're in a for-loop context
-                const inForLoop = contextStack.some(ctx => ctx.startsWith('loop_'));
-                if (inForLoop) {
-                    if (this.useHighlighting) {
-                        code += this.emitHighlight(nodeId, indentLevel);
-                    }
-                    // transparent skip - don't compile this node or its successors
-                    return code;
+// ===========================
+// Skip increment nodes in for-loops (for both outer and inner loops)
+// ===========================
+if (node.type === 'process' && node.text) {
+    // Check if this looks like an increment: x = x + 1, i = i - 1, i += 1, etc.
+    const incrementPattern = /^(\w+)\s*=\s*\1\s*[+-]\s*\d+/;
+    const incrementPattern2 = /^(\w+)\s*[+-]=\s*\d+/;
+    
+    if (incrementPattern.test(node.text) || incrementPattern2.test(node.text)) {
+        // Extract variable name
+        const varMatch = node.text.match(/^(\w+)/);
+        if (varMatch) {
+            const varName = varMatch[1];
+            
+            // Check if we're in any for-loop context that uses this variable
+            const inForLoop = contextStack.some(ctx => {
+                if (!ctx.startsWith('loop_')) return false;
+                const loopId = ctx.replace('loop_', '');
+                const forInfo = this.detectForLoopPattern(loopId);
+                return forInfo && forInfo.variable === varName;
+            });
+            
+            if (inForLoop) {
+                console.log(`Skipping for-loop increment node: ${nodeId} (${node.text})`);
+                if (this.useHighlighting) {
+                    code += this.emitHighlight(nodeId, indentLevel);
                 }
+                // Skip this node and continue with its successor
+                const next = this.getSuccessor(nodeId, 'next');
+                if (next) {
+                    return code + this.compileNode(next, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
+                }
+                return code;
             }
         }
+    }
+}
 
         // Check for implicit loops ONLY if this node is not part of a decision-controlled loop
         // (Decision loops are handled in compileDecision, which runs before we get here for decision nodes)
@@ -5805,26 +5816,87 @@ class FlowchartCompiler {
         return `${indent}highlight('${nodeId}')\n`;
     }
 
-    // Returns true if this node is the init assignment of a detected for-loop
-    isInitOfForLoop(nodeId) {
-        const node = this.nodes.find(n => n.id === nodeId);
-        if (!node || (node.type !== "var" && node.type !== "process")) return false;
+/**
+ * Returns true if this node is the init assignment of a detected for-loop
+ * Works for both outer and inner loops
+ */
+isInitOfForLoop(nodeId, contextStack = []) {
+    const node = this.nodes.find(n => n.id === nodeId);
+    if (!node || (node.type !== "var" && node.type !== "process")) return false;
 
-        // Look at EVERY decision node to see if it's a for-loop header
-        for (const dec of this.nodes.filter(n => n.type === "decision")) {
-            const info = this.detectForLoopPattern(dec.id);
-            if (!info || !info.initNodeId) continue;
+    // Get node text and extract variable name if it's an assignment
+    const text = node.text || '';
+    const assignmentMatch = text.match(/^\s*(\w+)\s*=\s*(.+?)\s*$/);
+    if (!assignmentMatch) return false;
+    
+    const varName = assignmentMatch[1];
+    const varValue = assignmentMatch[2].trim();
 
-            // Check if this node is the init for ANY for-loop
-            if (info.initNodeId === nodeId) {
-                console.log(`Node ${nodeId} is init for for-loop at ${dec.id}`);
-                return true;
+    // SPECIAL CASE FOR NESTED LOOPS:
+    // If we're inside a loop and this is an init for a DIFFERENT loop,
+    // it might be a nested loop init that should be skipped
+    if (contextStack.length > 0) {
+        const currentContext = contextStack[contextStack.length - 1];
+        if (currentContext.startsWith('loop_')) {
+            const currentLoopId = currentContext.replace('loop_', '');
+            const currentLoopInfo = this.detectForLoopPattern(currentLoopId);
+            
+            // Check all loops to see if this is an init for a NESTED loop
+            for (const dec of this.nodes.filter(n => n.type === "decision")) {
+                const info = this.detectForLoopPattern(dec.id);
+                if (!info || !info.variable) continue;
+
+                // Check if this node initializes the same variable as this for-loop
+                if (info.variable === varName && info.start === varValue) {
+                    // Check if this loop is INSIDE the current loop (nested)
+                    const loopNodes = this.naturalLoops.get(currentLoopId);
+                    const isNested = loopNodes && loopNodes.has(dec.id);
+                    
+                    if (isNested) {
+                        console.log(`Node ${nodeId} (${varName}=${varValue}) is init for NESTED loop ${dec.id} inside loop ${currentLoopId} - skipping`);
+                        return true;
+                    }
+                }
             }
         }
-
-        return false;
     }
 
+    // Original logic for non-nested cases
+    // Look at EVERY decision node to see if it's a for-loop header
+    for (const dec of this.nodes.filter(n => n.type === "decision")) {
+        const info = this.detectForLoopPattern(dec.id);
+        if (!info || !info.variable) continue;
+
+        // Check if this node initializes the same variable as the for-loop
+        if (info.variable === varName) {
+            // Additional check: the initialization value should match for-loop start
+            if (info.start === varValue) {
+                // Check if we're in the right context for this loop
+                const isReachable = this.pathExists(nodeId, dec.id);
+                
+                // Check if we're already in a loop context that might be using this variable
+                // Don't skip if we're inside a different loop that uses the same variable name
+                let shouldSkip = isReachable;
+                
+                // If we're in a context stack, verify this init belongs to the current loop
+                if (contextStack.length > 0) {
+                    const currentContext = contextStack[contextStack.length - 1];
+                    if (currentContext.startsWith('loop_')) {
+                        const currentLoopId = currentContext.replace('loop_', '');
+                        // Only skip if this init belongs to the current loop
+                        shouldSkip = shouldSkip && (dec.id === currentLoopId);
+                    }
+                }
+                
+                if (shouldSkip) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
     compileImplicitForeverLoop(nodeId, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader) {
         console.log(`compileImplicitForeverLoop: Compiling implicit loop starting at ${nodeId}`);
         const indent = "    ".repeat(indentLevel);
