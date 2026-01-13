@@ -34,6 +34,37 @@
     /* Keep the highlight color unchanged */
     --highlight-color: #eed202; /* Original highlight color */
 }
+
+
+
+/* --- Python preview line numbers (IDE-style) --- */
+.code-display.line-numbers {
+    counter-reset: fc-line;
+    padding-left: 72px; /* makes room for the gutter */
+}
+
+.code-display.line-numbers .code-line {
+    display: block;
+    position: relative;
+    padding-left: 12px;
+    white-space: pre; /* preserve indentation per line */
+}
+
+.code-display.line-numbers .code-line::before {
+    counter-increment: fc-line;
+    content: counter(fc-line);
+    position: absolute;
+    left: -60px;
+    width: 48px;
+    text-align: right;
+    color: #64748b;
+    opacity: 0.9;
+    user-select: none;          /* don't copy */
+    pointer-events: none;
+}
+
+
+
 /* Interactive Elements Cursors */
 .palette-item {
     cursor: alias;
