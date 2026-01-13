@@ -3872,19 +3872,27 @@ class EnhancedIRBuilder extends IRBuilder {
                     }
                     
                     if (shouldIncludeConvergeInYes) {
-                        // Build YES branch including the convergence point
-                        const branchUpToConverge = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
-                        // Now build the convergence point itself
-                        const convergeNode = this.buildNode(converge, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
-                        // Link them together
-                        if (branchUpToConverge) {
-                            const lastNode = this.getLastNodeInBranch(branchUpToConverge);
-                            if (lastNode && convergeNode) {
-                                lastNode.next = convergeNode;
+                        // Check if convergence point is an update node - if so, don't include it (for-loops handle this implicitly)
+                        const updateNodeInfo = this.convergenceFinder.isUpdateNode(converge);
+                        if (updateNodeInfo.isUpdate) {
+                            console.log(`  [BUILD IF] Convergence point ${converge} is update node for for-loop, skipping inclusion in YES branch (handled by range())`);
+                            // Build YES branch up to (but not including) the update node
+                            ifNode.thenBranch = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                        } else {
+                            // Build YES branch including the convergence point
+                            const branchUpToConverge = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                            // Now build the convergence point itself
+                            const convergeNode = this.buildNode(converge, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
+                            // Link them together
+                            if (branchUpToConverge) {
+                                const lastNode = this.getLastNodeInBranch(branchUpToConverge);
+                                if (lastNode && convergeNode) {
+                                    lastNode.next = convergeNode;
+                                }
+                                ifNode.thenBranch = branchUpToConverge;
+                            } else if (convergeNode) {
+                                ifNode.thenBranch = convergeNode;
                             }
-                            ifNode.thenBranch = branchUpToConverge;
-                        } else if (convergeNode) {
-                            ifNode.thenBranch = convergeNode;
                         }
                     } else {
                         // Build up to convergence point (exclusive)
@@ -4206,10 +4214,18 @@ class EnhancedIRBuilder extends IRBuilder {
                 } else if (converge) {
                     // Special case: if convergence point is the same as falseNext, include it in NO branch
                     // Even if it's also in YES branch path, the flowchart shows both branches go to it
+                    // BUT: Skip if it's an update node for a for-loop (handled by Python's range())
                     if (converge === falseNext) {
-                        // Include convergence point in NO branch (it's the direct target)
-                        console.log(`  [BUILD IF ${nodeId}] Convergence point ${converge} is direct target of NO branch, including in NO branch`);
-                        ifNode.elseBranch = this.buildNode(falseNext, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
+                        // Check if it's an update node - if so, don't include it (for-loops handle this implicitly)
+                        const updateNodeInfo = this.convergenceFinder.isUpdateNode(converge);
+                        if (updateNodeInfo.isUpdate) {
+                            console.log(`  [BUILD IF ${nodeId}] Convergence point ${converge} is update node for for-loop, skipping NO branch (handled by range())`);
+                            ifNode.elseBranch = null;
+                        } else {
+                            // Include convergence point in NO branch (it's the direct target)
+                            console.log(`  [BUILD IF ${nodeId}] Convergence point ${converge} is direct target of NO branch, including in NO branch`);
+                            ifNode.elseBranch = this.buildNode(falseNext, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
+                        }
                     } else {
                         // Build up to convergence point (exclusive)
                         ifNode.elseBranch = this.buildNodeUntil(falseNext, converge, new Set(), branchAllowedIds, activeLoops);
