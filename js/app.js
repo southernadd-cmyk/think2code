@@ -279,6 +279,24 @@ terminateByUser(reason = "PROGRAM TERMINATED BY USER") {
     this.log(`\n>>> ${reason}`);
 }
 ,
+renderPythonPreview(code) {
+    const el = document.getElementById('code-python');
+    if (!el) return;
+
+    el.classList.add('line-numbers');
+
+    // Build line-by-line DOM so indentation is preserved and line numbers are CSS-only
+    el.innerHTML = "";
+    const lines = String(code ?? "").replace(/\r\n/g, "\n").split("\n");
+
+    for (const line of lines) {
+        const div = document.createElement("div");
+        div.className = "code-line";
+        div.textContent = line; // safe (escapes HTML)
+        el.appendChild(div);
+    }
+},
+
 screenFromWorld(x, y) {
     return {
         x: x * this.viewportScale + this.viewportX,
@@ -1103,14 +1121,17 @@ path.setAttribute('d', dStr);
 updateCode() {
     try {
         const code = window.compileWithPipeline(this.nodes, this.connections, false, false);
-        document.getElementById('code-python').innerText = code;
+        this.renderPythonPreview(code);
+
 
         // exec version (with highlighting enabled)
         this.fullExecCode = window.compileWithPipeline(this.nodes, this.connections, true, false);
     } catch (error) {
         console.error('Compilation error:', error);
-        document.getElementById('code-python').innerText =
-            `# Compilation Error: ${error.message}\n# Check console for details.`;
+        this.renderPythonPreview(
+    `# Compilation Error: ${error.message}\n# Check console for details.`
+);
+
         this.fullExecCode = "";
     }
 },

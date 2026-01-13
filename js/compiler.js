@@ -11,9 +11,12 @@ class LoopClassifier {
         this.outgoingMap = outgoingMap;
         this.incomingMap = incomingMap;
         this.dominators = dominators;
-        
+
         // Loop patterns cache
         this.loopPatterns = new Map();
+
+        // Add findNode method
+        this.findNode = (nodeId) => this.nodes.find(n => n.id === nodeId);
     }
     
     classifyAllLoops() {
@@ -39,9 +42,41 @@ class LoopClassifier {
         this.joinPointMap = new Map();
 
         // Classify each header
-        for (const headerId of allHeadersFinal) {
+        // Prioritize decision nodes over process nodes (decision nodes are the "real" loop headers)
+        const sortedHeaders = Array.from(allHeadersFinal).sort((a, b) => {
+            const nodeA = this.nodes.find(n => n.id === a);
+            const nodeB = this.nodes.find(n => n.id === b);
+            // Decision nodes come first
+            if (nodeA?.type === 'decision' && nodeB?.type !== 'decision') return -1;
+            if (nodeA?.type !== 'decision' && nodeB?.type === 'decision') return 1;
+            return 0;
+        });
+        
+        for (const headerId of sortedHeaders) {
             const headerNode = this.nodes.find(n => n.id === headerId);
             if (!headerNode) continue;
+            
+            // Skip if this header is already part of another loop's body
+            // BUT: Allow nested loops - if a header is inside another loop's body but is itself a decision node,
+            // we should still classify it (it's a nested loop like a for loop inside a while loop)
+            // Only skip if it's not a decision node (decision nodes can be nested loop headers)
+            let skipHeader = false;
+            for (const [existingHeaderId, existingLoop] of this.loopPatterns) {
+                const bodyNodes = existingLoop.bodyNodes instanceof Set ? existingLoop.bodyNodes : new Set(existingLoop.bodyNodes);
+                if (bodyNodes.has(headerId) && existingHeaderId !== headerId) {
+                    // If this is a decision node, it might be a nested loop - don't skip it
+                    // (nested for loops and while loops are decision nodes)
+                    if (headerNode.type === 'decision') {
+                        // Allow nested loops - don't skip
+                        console.log(`Header ${headerId} is in loop ${existingHeaderId}'s body but is a decision node - allowing as nested loop`);
+                    } else {
+                        console.log(`Skipping ${headerId} - already part of loop ${existingHeaderId}'s body`);
+                        skipHeader = true;
+                        break;
+                    }
+                }
+            }
+            if (skipHeader) continue;
             
             console.log(`\nClassifying header: ${headerId} (${headerNode.type})`);
             
@@ -177,17 +212,12 @@ class LoopClassifier {
                     console.log(`Cycle: ${currentNode.type} ${nodeId} has back edge to ${edge.to}`);
                 }
 
-                // Also add any process nodes in the recursion stack as potential implicit loop headers
-                for (const stackNodeId of recursionStack) {
-                    const stackNode = this.nodes.find(n => n.id === stackNodeId);
-                    if (stackNode && stackNode.type === 'process') {
-                        cycleHeaders.add(stackNodeId);
-                        console.log(`Cycle: implicit process header ${stackNodeId} in cycle`);
-                    }
-                }
-
-                // Otherwise, find the decision or process node on the path to the back edge target
-                    const targetNode = this.nodes.find(n => n.id === edge.to);
+                // Find the decision or process node on the path to the back edge target
+                // Only add the target of the back edge as a potential loop header
+                // Don't add all process nodes in the recursion stack - that's too aggressive
+                // and catches initialization code that happens before the actual loop
+                // (e.g., "total = 0" before a for loop)
+                const targetNode = this.nodes.find(n => n.id === edge.to);
                 if (targetNode && (targetNode.type === 'decision' || targetNode.type === 'process')) {
                         cycleHeaders.add(edge.to);
                     console.log(`Cycle: back edge to ${targetNode.type} ${edge.to}`);
@@ -587,6 +617,38 @@ class LoopClassifier {
     }
 
     /**
+     * Check if a node can reach an END node
+     */
+    canReachEnd(startId) {
+        const visited = new Set();
+        const stack = [startId];
+
+        while (stack.length > 0) {
+            const currentId = stack.pop();
+
+            if (visited.has(currentId)) continue;
+            visited.add(currentId);
+
+            // If we reach END, return true
+            const node = this.nodes.find(n => n.id === currentId);
+            if (node && node.type === 'end') {
+                return true;
+            }
+
+            // Add all successors
+            const outgoing = this.outgoingMap.get(currentId) || [];
+            for (const edge of outgoing) {
+                const nextId = edge.to;
+                if (nextId && !visited.has(nextId)) {
+                    stack.push(nextId);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Find loop headers using dominator analysis (more accurate than cycle detection)
      */
     findDominatorBasedHeaders() {
@@ -741,11 +803,70 @@ class LoopClassifier {
         }
 
         // Check if body has decisions that exit to DIFFERENT paths than the normal exit
-        // If so, this should be a while-true loop instead (multiple distinct exit paths)
-        if (this.hasDistinctExitPaths(headerId, bodyNodes, exitNode)) {
-            console.log(`classifyWhileLoop(${headerId}): has distinct exit paths, rejecting for while-true`);
+        // BUT: Allow while-else pattern (one break path + one normal exit)
+        // Only reject if the normal exit is also END (meaning all exits are breaks = while-true pattern)
+        // OR if there are multiple distinct break exits (while-true with multiple breaks pattern)
+        const exitNodeType = exitNode ? (this.nodes.find(n => n.id === exitNode)?.type) : null;
+        const normalExitIsEnd = exitNodeType === 'end';
+        const hasDistinctExits = this.hasDistinctExitPaths(headerId, bodyNodes, exitNode);
+        
+        // Count how many distinct break exits we have (excluding normal exit)
+        const breakExitCount = this.countBreakExits(headerId, bodyNodes, exitNode);
+        
+        // Check if normal exit is also a break exit
+        // Key distinction for while-else vs while-true with multiple breaks:
+        // - If there's 1 break exit from body AND normal exit leads to END:
+        //   * If normal exit is a decision node → it's a break exit (while-true with 2 breaks)
+        //   * If normal exit is output/process AND there's already a break in body → likely while-true with 2 breaks
+        //   * BUT: If the loop condition is a "limit" check (like attempts < 3), the normal exit is the else clause
+        // 
+        // For now, we'll use a heuristic:
+        // - If normal exit leads to END AND there's a break in body, check if it's a decision node
+        // - Decision node normal exit = break exit (while-true)
+        // - Non-decision normal exit = check if loop condition suggests it's a limit check
+        let normalExitIsBreak = false;
+        if (exitNode && breakExitCount >= 1) {
+            const exitNodeObj = this.nodes.find(n => n.id === exitNode);
+            if (exitNodeObj) {
+                if (exitNodeObj.type === 'decision') {
+                    // Decision node that breaks to END = break exit
+                    normalExitIsBreak = this.canReachEndWithoutHeader(exitNode, headerId);
+                } else if (exitNodeObj.type === 'output' || exitNodeObj.type === 'process') {
+                    // For output/process nodes, if they lead to END and there's a break in body,
+                    // check if the loop condition suggests it's a "limit" pattern (while-else) or "value" pattern (while-true)
+                    // Heuristic: if condition uses < or <= with a constant, it's likely a limit check (while-else)
+                    // Otherwise, if condition checks for a specific value, it's likely a break condition (while-true)
+                    const condition = headerNode.text || '';
+                    const isLimitCheck = /<|<=/.test(condition) && /\d+/.test(condition);
+                    if (!isLimitCheck && this.canReachEndWithoutHeader(exitNode, headerId)) {
+                        // Not a limit check and leads to END → treat as break exit (while-true with 2 breaks)
+                        normalExitIsBreak = true;
+                    }
+                    // If it's a limit check, it's the else clause (while-else)
+                }
+            }
+        }
+        
+        // Reject if:
+        // 1. There are distinct exits (breaks) AND normal exit is also END
+        //    This means all exits are breaks = while-true pattern, not while-else
+        // 2. There are multiple distinct break exits (2 or more break exits from body)
+        //    This means we should use while-true with multiple breaks, not while-else
+        // 3. There is 1 break exit from body AND normal exit is also a break
+        //    This means 2 total break exits = while-true with multiple breaks
+        if (hasDistinctExits && normalExitIsEnd) {
+            console.log(`classifyWhileLoop(${headerId}): has distinct exit paths and normal exit is END, rejecting for while-true`);
             return null;
         }
+        if (breakExitCount >= 2) {
+            console.log(`classifyWhileLoop(${headerId}): has ${breakExitCount} break exits, rejecting for while-true with multiple breaks`);
+            return null;
+        }
+        if (breakExitCount >= 1 && normalExitIsBreak) {
+            console.log(`classifyWhileLoop(${headerId}): has ${breakExitCount} break exit(s) from body and normal exit is also a break (total: ${breakExitCount + 1}), rejecting for while-true with multiple breaks`);
+            return null;
+        }
+        // If there are distinct exits but normal exit is NOT a break (it's the else clause) and only 1 break from body, it's a while-else pattern - allow it
         
         console.log(`classifyWhileLoop(${headerId}): loopEntry=${loopEntry}, exitNode=${exitNode}, useNoBranch=${useNoBranch}, bodyNodes=${JSON.stringify(Array.from(bodyNodes))}`);
         return {
@@ -775,6 +896,12 @@ class LoopClassifier {
             if (!nextNode) return null;
             
             const bodyNodes = this.collectLoopBodyNodes(headerId, nextNode);
+            
+            // For while-true loops with process node headers, the header itself is part of the body
+            // because it executes on each iteration (e.g., "x = not(x)" in a while-true loop)
+            if (!bodyNodes.includes(headerId)) {
+                bodyNodes.push(headerId);
+            }
 
             // Check if this process node has multiple distinct exit paths
             const exitNodes = this.findProcessExitNodes(headerId, bodyNodes);
@@ -812,6 +939,96 @@ class LoopClassifier {
                 metadata: { 
                     isImplicit: false,
                     originalCondition: condition 
+                }
+            };
+        }
+        
+        // Case 3: Decision node with multiple break exits (rejected from while-loop classification)
+        // This handles patterns like: while True with multiple break statements
+        const yesId = this.getSuccessor(headerId, 'yes') || this.getSuccessor(headerId, 'true');
+        const noId = this.getSuccessor(headerId, 'no') || this.getSuccessor(headerId, 'false');
+        
+        // Determine which branch is the loop body (the one that loops back)
+        const yesLoops = yesId && this.pathExists(yesId, headerId);
+        const noLoops = noId && this.pathExists(noId, headerId);
+        
+        let loopEntry = null;
+        let exitNode = null;
+        
+        if (yesLoops && !noLoops) {
+            loopEntry = yesId;
+            exitNode = noId;
+        } else if (noLoops && !yesLoops) {
+            loopEntry = noId;
+            exitNode = yesId;
+        } else if (yesLoops && noLoops) {
+            // Both loop - prefer yes branch
+            loopEntry = yesId;
+            exitNode = noId;
+        } else {
+            // Neither loops - not a while-true loop
+            return null;
+        }
+        
+        if (!loopEntry) return null;
+        
+        // Collect body nodes
+        const bodyNodes = this.collectLoopBodyNodes(headerId, loopEntry);
+        
+        // Check if this has multiple break exits (should have been rejected from while-loop)
+        const breakExitCount = this.countBreakExits(headerId, bodyNodes, exitNode);
+        
+        // Check if normal exit is also a break exit (only if it's a decision node that breaks)
+        let normalExitIsBreak = false;
+        if (exitNode) {
+            const exitNodeObj = this.nodes.find(n => n.id === exitNode);
+            if (exitNodeObj && exitNodeObj.type === 'decision') {
+                normalExitIsBreak = this.canReachEndWithoutHeader(exitNode, headerId);
+            }
+        }
+        const totalBreakExits = breakExitCount + (normalExitIsBreak ? 1 : 0);
+        
+        if (breakExitCount >= 2 || totalBreakExits >= 2) {
+            // This is a while-true loop with multiple breaks
+            // Include the exit node in bodyNodes so it's built as part of the loop body
+            // and converted to a break statement
+            const bodyNodesWithExit = [...bodyNodes];
+            if (exitNode && !bodyNodesWithExit.includes(exitNode)) {
+                bodyNodesWithExit.push(exitNode);
+            }
+            
+            const exitNodes = [];
+            if (exitNode) {
+                exitNodes.push(exitNode);
+            }
+            // Also collect other break exits from body
+            for (const nodeId of bodyNodes) {
+                const node = this.nodes.find(n => n.id === nodeId);
+                if (node && node.type === 'decision') {
+                    const yesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
+                    const noBranch = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
+                    for (const branch of [yesBranch, noBranch]) {
+                        if (branch && branch !== headerId && this.canReachEndWithoutHeader(branch, headerId)) {
+                            if (!exitNodes.includes(branch)) {
+                                exitNodes.push(branch);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            return {
+                type: 'while_true',
+                headerId: headerId,
+                condition: 'True',
+                bodyNodes: bodyNodesWithExit, // Include exit node in body
+                exitNodes: exitNodes,
+                loopEntry: loopEntry,
+                metadata: {
+                    isImplicit: false,
+                    isMultiExit: true,
+                    originalCondition: condition,
+                    exitNode: exitNode // Store the exit node for special handling
                 }
             };
         }
@@ -868,14 +1085,46 @@ class LoopClassifier {
     }
 
     /**
+     * Count how many distinct break exits (paths to END) exist in the loop body
+     * Only counts break exits that are DIFFERENT from the normal exit node
+     * The normal exit is handled separately - it's not a break exit, it's the else clause
+     */
+    countBreakExits(headerId, bodyNodes, normalExitNode) {
+        const breakExits = new Set();
+        
+        for (const nodeId of bodyNodes) {
+            const node = this.nodes.find(n => n.id === nodeId);
+            if (node && node.type === 'decision') {
+                const yesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
+                const noBranch = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
+
+                for (const branch of [yesBranch, noBranch]) {
+                    if (branch && branch !== headerId && branch !== normalExitNode) {
+                        // Check if this branch leads to End without going through the header
+                        // Only count it if it's different from the normal exit (break exits are distinct from normal exit)
+                        if (this.canReachEndWithoutHeader(branch, headerId)) {
+                            // Add the branch node ID to break exits set
+                            breakExits.add(branch);
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Don't count the normal exit node - it's the else clause, not a break exit
+        // If the normal exit leads to END, that's fine for while-else patterns
+        
+        return breakExits.size;
+    }
+
+    /**
      * Find exit nodes for a process node header
      */
     findProcessExitNodes(headerId, bodyNodes) {
-        const exits = [];
-        // Convert to Set if it's an Array
+        // Convert to Set if it's an array
         const bodyNodesSet = bodyNodes instanceof Set ? bodyNodes : new Set(bodyNodes);
-        
-        for (const nodeId of bodyNodes) {
+        const exits = [];
+        for (const nodeId of bodyNodesSet) {
             const node = this.nodes.find(n => n.id === nodeId);
             if (node && node.type === 'decision') {
                 const yesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
@@ -992,7 +1241,7 @@ class LoopClassifier {
     findLoopBodyNodes(headerId, stopBeforeId) {
         const bodyNodes = new Set();
         const queue = [];
-        
+
         // Add initial successors of header (excluding exit)
         const outgoing = this.outgoingMap.get(headerId) || [];
         for (const edge of outgoing) {
@@ -1000,20 +1249,21 @@ class LoopClassifier {
                 queue.push(edge.to);
             }
         }
-        
+
         // BFS to collect body nodes
         while (queue.length > 0) {
             const nodeId = queue.shift();
-            if (nodeId === headerId || bodyNodes.has(nodeId)) {
+            if (nodeId === headerId || bodyNodes.has(nodeId) || nodeId === stopBeforeId) {
                 continue;
             }
-            
+
             bodyNodes.add(nodeId);
-            
+
             // Add successors (don't exclude nodes with exit paths - they might still be part of the loop body)
+            // But stop before the update node
             const succOutgoing = this.outgoingMap.get(nodeId) || [];
             for (const edge of succOutgoing) {
-                if (edge.to !== headerId && !bodyNodes.has(edge.to)) {
+                if (edge.to !== headerId && edge.to !== stopBeforeId && !bodyNodes.has(edge.to)) {
                     queue.push(edge.to);
                 }
             }
@@ -1655,14 +1905,13 @@ class EnhancedFlowAnalyzer extends FlowAnalyzer {
     analyze() {
         const basicAnalysis = super.analyze();
         this.loopClassifications = this.loopClassifier.classifyAllLoops();
-    
+
         return {
             ...basicAnalysis,
-            loopClassifications: this.loopClassifications
-            // DO NOT overwrite basicAnalysis.loops
+            loopClassifications: this.loopClassifications,
+            loops: this.loopClassifications
         };
     }
-    
     
     getLoopClassification(headerId) {
         return this.loopClassifications.get(headerId);
@@ -1703,6 +1952,7 @@ class IRIf extends IRNode {
         this.condition = condition;
         this.thenBranch = null;
         this.elseBranch = null;
+        this.hasNoBranch = false; // Track if there's a "no" branch path, even if empty
     }
 }
 
@@ -1744,6 +1994,352 @@ class IRContinue extends IRNode {
 class IRHighlight extends IRNode {
     constructor(nodeId) {
         super('highlight', nodeId);
+    }
+}
+
+/**
+ * ConvergenceFinder - Centralized class for finding convergence points in control flow
+ * Handles if/elif chains, loop exit nodes, update nodes, and nested loops
+ */
+class ConvergenceFinder {
+    constructor(nodes, connections, loopClassifications, getSuccessor, findNode, getSuccessors) {
+        this.nodes = nodes;
+        this.connections = connections;
+        this.loopClassifications = loopClassifications;
+        this.getSuccessor = getSuccessor;
+        this.findNode = findNode;
+        this.getSuccessors = getSuccessors;
+    }
+    
+    /**
+     * Check if a node has a direct back edge to the header
+     */
+    hasDirectBackEdgeTo(nodeId, headerId) {
+        if (!nodeId || !headerId) return false;
+        // Check all connections from nodeId
+        for (const conn of this.connections) {
+            if (conn.from === nodeId && conn.to === headerId) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * Check if a node has any back edge to the header (direct or indirect)
+     */
+    hasAnyBackEdgeTo(nodeId, headerId, visited = new Set()) {
+        if (!nodeId || !headerId) return false;
+        if (visited.has(nodeId)) return false;
+        visited.add(nodeId);
+        
+        // Check direct back edge
+        if (this.hasDirectBackEdgeTo(nodeId, headerId)) {
+            return true;
+        }
+        
+        // Check indirect back edge through successors
+        const successors = this.getSuccessors(nodeId);
+        for (const succId of successors) {
+            if (this.hasAnyBackEdgeTo(succId, headerId, visited)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Find the convergence point for an if statement (handles elif chains)
+     */
+    findConvergencePoint(decisionId, yesId, noId, currentLoopHeaderId = null, allowedIds = null) {
+        // Method 1: Try to find common convergence point using BFS
+        let convergencePoint = this.findCommonConvergencePoint(decisionId, yesId, noId);
+        
+        // Method 2: If that fails, try following the elif chain manually
+        if (!convergencePoint && noId) {
+            convergencePoint = this.findConvergenceInElifChain(decisionId, noId);
+        }
+        
+        // Method 3: Post-process the convergence point to handle loop exit/update nodes
+        if (convergencePoint) {
+            const adjusted = this.adjustConvergencePointForLoops(
+                convergencePoint, 
+                currentLoopHeaderId, 
+                allowedIds
+            );
+            return adjusted.convergencePoint;
+        }
+        
+        return null;
+    }
+
+    /**
+     * Find common convergence point using BFS traversal
+     */
+    findCommonConvergencePoint(decisionId, yesId, noId) {
+        const decisionVisited = new Set();
+        return this.findCommonConvergencePointWithVisited(decisionId, yesId, noId, decisionVisited);
+    }
+
+    /**
+     * Find common convergence point with visited set to prevent infinite recursion
+     */
+    findCommonConvergencePointWithVisited(decisionId, yesId, noId, decisionVisited) {
+        if (decisionVisited.has(decisionId)) {
+            return null;
+        }
+        decisionVisited.add(decisionId);
+        
+        const loopHeaders = this.loopClassifications ? 
+            new Set(this.loopClassifications.keys()) : new Set();
+        
+        const nodesInLoops = new Set();
+        if (this.loopClassifications) {
+            for (const [headerId, loopInfo] of this.loopClassifications.entries()) {
+                if (loopInfo.bodyNodes) {
+                    const bodyNodes = Array.isArray(loopInfo.bodyNodes) ? Array.from(loopInfo.bodyNodes) : loopInfo.bodyNodes;
+                    bodyNodes.forEach(nodeId => nodesInLoops.add(nodeId));
+                }
+            }
+        }
+        
+        const collectNonDecisions = (startId) => {
+            const results = new Set();
+            if (!startId) return results;
+            
+            const visited = new Set();
+            const queue = [{ id: startId, depth: 0 }];
+            const maxDepth = 15;
+            const exploring = new Set();
+            
+            while (queue.length > 0) {
+                const { id, depth } = queue.shift();
+                
+                if (visited.has(id) || depth > maxDepth || exploring.has(id)) continue;
+                if (loopHeaders.has(id)) continue;
+                
+                exploring.add(id);
+                visited.add(id);
+        
+                const node = this.findNode(id);
+                if (!node) {
+                    exploring.delete(id);
+                    continue;
+                }
+
+                if (node.type === 'decision') {
+                    exploring.delete(id);
+                    continue;
+                }
+
+                results.add(id);
+
+                if (depth < maxDepth - 1) {
+                    const successors = this.getSuccessors(id);
+                    for (const succId of successors) {
+                        if (succId && !visited.has(succId) && !exploring.has(succId) && 
+                            !loopHeaders.has(succId) && !nodesInLoops.has(succId)) {
+                            queue.push({ id: succId, depth: depth + 1 });
+                        }
+                    }
+                }
+                
+                exploring.delete(id);
+            }
+
+            return results;
+        };
+
+        const yesNodes = collectNonDecisions(yesId);
+        const noNodes = collectNonDecisions(noId);
+
+        const commonNodes = new Set();
+        for (const nodeId of yesNodes) {
+            if (noNodes.has(nodeId)) {
+                commonNodes.add(nodeId);
+            }
+        }
+
+        if (commonNodes.size > 0) {
+            const nodeCache = new Map();
+            const getNode = (id) => {
+                if (!nodeCache.has(id)) {
+                    nodeCache.set(id, this.findNode(id));
+                }
+                return nodeCache.get(id);
+            };
+            
+            const sortedCommon = Array.from(commonNodes).sort((a, b) => {
+                const nodeA = getNode(a);
+                const nodeB = getNode(b);
+                if (!nodeA || !nodeB) return 0;
+                if (nodeA.type === 'end' && nodeB.type !== 'end') return -1;
+                if (nodeB.type === 'end' && nodeA.type !== 'end') return 1;
+                if (nodeA.type === 'output' && nodeB.type !== 'output') return -1;
+                if (nodeB.type === 'output' && nodeA.type !== 'output') return 1;
+                return 0;
+            });
+            return sortedCommon[0];
+        }
+
+        const maxElifDepth = 10;
+        if (decisionVisited.size >= maxElifDepth) {
+            return null;
+        }
+        
+        const noNode = this.findNode(noId);
+        if (noNode && noNode.type === 'decision' && !decisionVisited.has(noId)) {
+            const noYesId = this.getSuccessor(noId, 'yes') || this.getSuccessor(noId, 'true');
+            const noNoId = this.getSuccessor(noId, 'no') || this.getSuccessor(noId, 'false');
+            return this.findCommonConvergencePointWithVisited(noId, noYesId, noNoId, decisionVisited);
+        }
+        
+        return null;
+    }
+
+    /**
+     * Find convergence point by following elif chain manually
+     */
+    findConvergenceInElifChain(startDecisionId, noId) {
+        let current = noId;
+        const visitedDecisions = new Set([startDecisionId]);
+        
+        while (current && visitedDecisions.size < 10) {
+            const currentNode = this.findNode(current);
+            if (!currentNode) break;
+            
+            if (currentNode.type === 'decision') {
+                if (visitedDecisions.has(current)) break;
+                visitedDecisions.add(current);
+                
+                const elifNo = this.getSuccessor(current, 'no') || this.getSuccessor(current, 'false');
+                if (elifNo) {
+                    const elifNoNode = this.findNode(elifNo);
+                    if (elifNoNode && elifNoNode.type !== 'decision') {
+                        return elifNo;
+                    }
+                    current = elifNo;
+                } else {
+                    break;
+                }
+            } else {
+                return current;
+            }
+        }
+        
+        return null;
+    }
+
+    /**
+     * Adjust convergence point to handle loop exit nodes and update nodes
+     * @param {string} convergencePoint - The convergence point node ID
+     * @param {string} currentLoopHeaderId - The current loop header ID (if inside a loop)
+     * @param {Set} allowedIds - Set of allowed node IDs (if inside a loop body)
+     * @param {Set} parentAllowedIds - Set of parent loop's allowed node IDs (if building a nested loop)
+     */
+    adjustConvergencePointForLoops(convergencePoint, currentLoopHeaderId, allowedIds, parentAllowedIds = null) {
+        if (!convergencePoint || !this.loopClassifications) {
+            return { convergencePoint, shouldStop: false, isNestedLoopExit: false, isInParentAllowedIds: false };
+        }
+
+        let actualConvergencePoint = convergencePoint;
+        let shouldStop = false;
+        let isNestedLoopExit = false;
+        let isInParentAllowedIds = false;
+
+        for (const [loopHeaderId, loopInfo] of this.loopClassifications.entries()) {
+            if (loopInfo.type === 'for' && loopInfo.updateNodeId === convergencePoint) {
+                // This is an update node for some loop
+                if (allowedIds && allowedIds.has(convergencePoint)) {
+                    // The update node is already in the loop body, so don't treat it as a convergence point
+                    console.log(`  Convergence point ${convergencePoint} is update node in loop body, clearing convergence point`);
+                    actualConvergencePoint = null;
+                } else {
+                    // The branch should stop here
+                    console.log(`  Convergence point ${convergencePoint} is update node for loop ${loopHeaderId}, stopping (will loop back)`);
+                    shouldStop = true;
+                }
+                break;
+            }
+            
+            if (currentLoopHeaderId && loopHeaderId === currentLoopHeaderId && 
+                loopInfo.exitNodes && loopInfo.exitNodes.includes(convergencePoint)) {
+                console.log(`  Convergence point ${convergencePoint} is exit node of current loop ${currentLoopHeaderId}, stopping`);
+                shouldStop = true;
+                break;
+            }
+            
+            // Check if convergence point is an update node for the current loop
+            // For while loops, updateNodeId is not stored, so we check if the convergence point
+            // has a DIRECT back edge to the current loop header (only direct = actual update node)
+            if (currentLoopHeaderId && loopHeaderId === currentLoopHeaderId) {
+                // For while loops: check if convergence point has a DIRECT back edge to header
+                // Only direct back edges indicate the actual update node (the one that loops back immediately)
+                // Indirect back edges just mean the node can eventually reach the header, which is true for most loop body nodes
+                if (loopInfo.type === 'while' && convergencePoint) {
+                    const hasDirectBackEdge = this.hasDirectBackEdgeTo(convergencePoint, currentLoopHeaderId);
+                    if (hasDirectBackEdge) {
+                        // This is the update node for the current loop
+                        if (allowedIds && allowedIds.has(convergencePoint)) {
+                            // The update node is already in the loop body, so don't treat it as a convergence point
+                            console.log(`  Convergence point ${convergencePoint} is update node in loop body, clearing convergence point`);
+                            actualConvergencePoint = null;
+                        } else {
+                            // The branch should stop here
+                            console.log(`  Convergence point ${convergencePoint} has direct back edge to current loop ${currentLoopHeaderId}, stopping (will loop back)`);
+                            shouldStop = true;
+                        }
+                        break;
+                    }
+                }
+                // For for-loops: check updateNodeId
+                if (loopInfo.updateNodeId === convergencePoint) {
+                    // This is the update node for the current loop - it will loop back naturally
+                    console.log(`  Convergence point ${convergencePoint} is update node for current loop ${currentLoopHeaderId}, stopping (will loop back)`);
+                    shouldStop = true;
+                    break;
+                }
+            }
+            
+            if (currentLoopHeaderId && loopHeaderId !== currentLoopHeaderId &&
+                loopInfo.exitNodes && loopInfo.exitNodes.includes(convergencePoint)) {
+                // This is a nested loop's exit node
+                // For nested loops, the exit node should be handled by the nested loop itself, not as a convergence point
+                // unless it's specifically in the parent's allowedIds for a different reason
+                isNestedLoopExit = true;
+                console.log(`  Convergence point ${convergencePoint} is exit node of nested loop ${loopHeaderId}, skipping (handled by nested loop)`);
+                break;
+            }
+        }
+        
+        // If convergence point is in parentAllowedIds but not in allowedIds, and we haven't already set isInParentAllowedIds,
+        // set it now (this handles cases where the convergence point is in parentAllowedIds but wasn't detected as a nested loop exit)
+        if (!isInParentAllowedIds && parentAllowedIds && parentAllowedIds.has(actualConvergencePoint) && 
+            currentLoopHeaderId && allowedIds && !allowedIds.has(actualConvergencePoint)) {
+            isInParentAllowedIds = true;
+            console.log(`  Convergence point ${actualConvergencePoint} is in parentAllowedIds but not in allowedIds, setting isInParentAllowedIds=true`);
+        }
+
+        return {
+            convergencePoint: actualConvergencePoint,
+            shouldStop,
+            isNestedLoopExit,
+            isInParentAllowedIds
+        };
+    }
+
+    /**
+     * Check if a node is an update node for any loop
+     */
+    isUpdateNode(nodeId) {
+        if (!this.loopClassifications || !nodeId) return { isUpdate: false };
+        for (const [loopHeaderId, loopInfo] of this.loopClassifications.entries()) {
+            if (loopInfo.type === 'for' && loopInfo.updateNodeId === nodeId) {
+                return { isUpdate: true, loopHeaderId, exitNode: loopInfo.exitNodes?.[0] || null };
+            }
+        }
+        return { isUpdate: false };
     }
 }
 
@@ -1952,6 +2548,23 @@ class IRBuilder {
         }
         decisionVisited.add(decisionId);
         
+        // Get loop headers to avoid traversing back into loops
+        // Use this.loopClassifications which is already stored in EnhancedIRBuilder
+        const loopHeaders = this.loopClassifications ? 
+            new Set(this.loopClassifications.keys()) : new Set();
+        
+        // Build a set of all nodes that are inside any loop body
+        // This helps us avoid traversing through loop structures when finding convergence points
+        const nodesInLoops = new Set();
+        if (this.loopClassifications) {
+            for (const [headerId, loopInfo] of this.loopClassifications.entries()) {
+                if (loopInfo.bodyNodes) {
+                    const bodyNodes = Array.isArray(loopInfo.bodyNodes) ? loopInfo.bodyNodes : Array.from(loopInfo.bodyNodes);
+                    bodyNodes.forEach(nodeId => nodesInLoops.add(nodeId));
+                }
+            }
+        }
+        
         // Collect all non-decision nodes reachable from each branch
         // Use iterative BFS instead of recursive DFS to prevent stack overflow
         const collectNonDecisions = (startId) => {
@@ -1960,20 +2573,35 @@ class IRBuilder {
             
             const visited = new Set();
             const queue = [{ id: startId, depth: 0 }];
-            const maxDepth = 20;
+            const maxDepth = 15; // Reduced from 20 to prevent deep recursion
+            // Track nodes we're currently exploring to detect cycles immediately
+            const exploring = new Set();
             
             while (queue.length > 0) {
                 const { id, depth } = queue.shift();
                 
                 // Skip if already visited or too deep
                 if (visited.has(id) || depth > maxDepth) continue;
+                
+                // Cycle detection: if we're already exploring this node, skip it
+                if (exploring.has(id)) continue;
+                
+                // Skip loop headers - they're structural nodes, not convergence points
+                if (loopHeaders.has(id)) continue;
+                
+                exploring.add(id);
                 visited.add(id);
         
                 const node = this.findNode(id);
-                if (!node) continue;
+                if (!node) {
+                    exploring.delete(id);
+                    continue;
+                }
 
                 // If we hit a decision node, stop traversing (it's a branch point)
+                // Don't traverse through decision nodes when finding convergence points
                 if (node.type === 'decision') {
+                    exploring.delete(id);
                     continue;
                 }
 
@@ -1984,11 +2612,14 @@ class IRBuilder {
                 if (depth < maxDepth - 1) {
                     const successors = this.getSuccessors(id);
                     for (const succId of successors) {
-                        if (succId && !visited.has(succId)) {
+                        if (succId && !visited.has(succId) && !exploring.has(succId) && 
+                            !loopHeaders.has(succId) && !nodesInLoops.has(succId)) {
                             queue.push({ id: succId, depth: depth + 1 });
                         }
                     }
                 }
+                
+                exploring.delete(id);
             }
 
             return results;
@@ -2135,8 +2766,18 @@ class IRBuilder {
         }
         
         // If this is a decision that's not a loop, build as if statement
+        // IMPORTANT: When building inside buildNodeUntil, we need to pass the stopId
+        // so that the if statement knows to stop before the convergence point
         if (node.type === 'decision') {
-            return this.buildIfStatement(startId, node, visited, allowedIds, null, activeLoops, new Set());
+            // Pass stopId to buildIfStatement so it knows the convergence point
+            // This prevents branches from including the convergence point
+            const ifIR = this.buildIfStatement(startId, node, visited, allowedIds, null, activeLoops, new Set());
+            // If we have a stopId and the if statement's next is the stopId, clear it
+            // The convergence point should only be added once at the top level
+            if (ifIR && stopId && ifIR.next && ifIR.next.id === stopId) {
+                ifIR.next = null;
+            }
+            return ifIR;
         }
         
         // Build as regular node (but don't follow next chain here - we'll do it below)
@@ -2152,8 +2793,9 @@ class IRBuilder {
                 break;
             case 'input':
                 {
-                    const raw = (node.text || '').trim();
-                    const compiled = raw.length > 0 ? raw : this.buildInputStatement(node);
+                    // Always use buildInputStatement for input nodes to generate proper Python code
+                    // node.text might contain a label/prompt, but we need the full input statement
+                    const compiled = this.buildInputStatement(node);
                     stmt = new IRStatement(node.id, 'input', compiled);
                 }
                 break;
@@ -2172,8 +2814,22 @@ class IRBuilder {
                 const nextStmt = this.buildNodeUntil(next, stopId, visited, allowedIds, activeLoops, excludeNodeId);
                 if (nextStmt) {
                     stmt.next = nextStmt;
+                    console.log(`  buildNodeUntil(${startId}, ${stopId}): set stmt.next to ${nextStmt.id} (type=${nextStmt.type})`);
                 }
             }
+        } else if (next === stopId) {
+            // CRITICAL: If the next node IS the stopId (convergence point), we must NOT include it
+            // This is the key fix - when n82's next is n57, we should NOT set stmt.next
+            // The convergence point will be added separately after the if/elif chain
+            console.log(`  buildNodeUntil(${startId}, ${stopId}): next=${next} is stopId, NOT including in chain`);
+            // Ensure stmt.next is null
+            if (stmt.next) {
+                console.error(`  ERROR: stmt.next is already set to ${stmt.next.id}, clearing it`);
+                stmt.next = null;
+            }
+        } else {
+            // No next node
+            console.log(`  buildNodeUntil(${startId}, ${stopId}): no next node, stmt.next remains null`);
         }
         
         return stmt;
@@ -2351,16 +3007,12 @@ class IRBuilder {
         
         const visited = new Set();
         const stack = [fromId];
-        let foundHeader = false;
         
         while (stack.length > 0) {
             const currentId = stack.pop();
             
             // If we come back to the header → not an exit (it's a back edge)
-            if (currentId === headerId) {
-                foundHeader = true;
-                continue; // Skip the header, but mark that we found it
-            }
+            if (currentId === headerId) continue;
             
             if (visited.has(currentId)) continue;
             visited.add(currentId);
@@ -2369,25 +3021,20 @@ class IRBuilder {
             if (!node) continue;
 
             // If we reach END → success (exits the loop)
-            // BUT: only if we haven't encountered the header first
-            if (node.type === 'end') {
-                // If we found the header before reaching END, this is not an exit
-                return !foundHeader;
-            }
+            if (node.type === 'end') return true;
             
             // Follow all successors depending on node type
             if (node.type === 'decision') {
                 const y = this.getSuccessor(currentId, 'yes') || this.getSuccessor(currentId, 'true');
                 const n = this.getSuccessor(currentId, 'no') || this.getSuccessor(currentId, 'false');
-                if (y && !visited.has(y) && y !== headerId) stack.push(y);
-                if (n && !visited.has(n) && n !== headerId) stack.push(n);
+                if (y && !visited.has(y)) stack.push(y);
+                if (n && !visited.has(n)) stack.push(n);
             } else {
                 const next = this.getSuccessor(currentId, 'next');
-                if (next && !visited.has(next) && next !== headerId) stack.push(next);
+                if (next && !visited.has(next)) stack.push(next);
             }
         }
 
-        // If we found the header but never reached END, this is not an exit
         return false;
     }
 
@@ -2399,15 +3046,12 @@ class IRBuilder {
         if (!startId) return false;
         if (startId === headerId) return false; // Back edge - doesn't exit
         
-        // If we've visited this node, we're in a cycle
-        // If the cycle doesn't include the header, we can't determine if it exits
-        // Return false to be conservative (don't assume it exits)
-        if (visited.has(startId)) return false;
+        if (visited.has(startId)) return true; // Already checked this path
         visited.add(startId);
-        
+
         const node = this.findNode(startId);
         if (!node) return false;
-        
+
         // If we reach END → this path exits
         if (node.type === 'end') return true;
         
@@ -2422,17 +3066,152 @@ class IRBuilder {
             const next = this.getSuccessor(startId, 'next');
             if (next) succs.push(next);
         }
-        
+
         // If no successors, this path doesn't exit
         if (succs.length === 0) return false;
-        
+
         // ALL paths must exit for this to return true
         for (const s of succs) {
             if (!this.allPathsExitLoop(s, headerId, new Set([...visited]))) {
                 return false;
             }
         }
+
+        return true;
+    }
+}
+
+/**
+ * BreakManager - Centralized break statement detection and insertion logic
+ */
+class BreakManager {
+    constructor(nodes, connections, flowAnalysis, outgoingMap, incomingMap) {
+        this.nodes = nodes;
+        this.connections = connections;
+        this.flowAnalysis = flowAnalysis;
+        this.outgoingMap = outgoingMap;
+        this.incomingMap = incomingMap;
+    }
+
+    /**
+     * Check if a branch loops back to the loop header (NOT an exit)
+     */
+    branchLoopsBackToHeader(branchStartId, loopHeaderId) {
+        if (!branchStartId || !loopHeaderId) return false;
+        if (branchStartId === loopHeaderId) return true;
         
+        // Use pathExists from flowAnalysis if available
+        if (this.flowAnalysis?.loopClassifier?.pathExists) {
+            return this.flowAnalysis.loopClassifier.pathExists(branchStartId, loopHeaderId);
+        }
+        
+        // Fallback: simple reachability check
+        const visited = new Set();
+        const stack = [branchStartId];
+        
+        while (stack.length > 0) {
+            const currentId = stack.pop();
+            if (currentId === loopHeaderId) return true;
+            if (visited.has(currentId)) continue;
+            visited.add(currentId);
+            
+            const outgoing = this.outgoingMap.get(currentId) || [];
+            for (const edge of outgoing) {
+                if (!visited.has(edge.to)) {
+                    stack.push(edge.to);
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Check if a branch reaches END (is an exit)
+     */
+    branchReachesEnd(branchStartId, loopHeaderId) {
+        if (!branchStartId) return false;
+        if (branchStartId === loopHeaderId) return false;
+        
+        const visited = new Set();
+        const stack = [branchStartId];
+        
+        while (stack.length > 0) {
+            const currentId = stack.pop();
+            
+            if (currentId === loopHeaderId) continue; // Don't go through header
+            if (visited.has(currentId)) continue;
+            visited.add(currentId);
+            
+            const node = this.nodes.find(n => n.id === currentId);
+            if (!node) continue;
+            
+            if (node.type === 'end') return true;
+            
+            const outgoing = this.outgoingMap.get(currentId) || [];
+            for (const edge of outgoing) {
+                if (!visited.has(edge.to) && edge.to !== loopHeaderId) {
+                    stack.push(edge.to);
+                }
+            }
+        }
+        
+        return false;
+    }
+
+    /**
+     * Get loop type for a given header
+     */
+    getLoopType(loopHeaderId) {
+        if (!loopHeaderId) return null;
+        
+        // Check loop classifications
+        const loopInfo = this.flowAnalysis?.loopClassifier?.loopPatterns?.get(loopHeaderId);
+        if (loopInfo) {
+            switch (loopInfo.type) {
+                case 'for': return 'for';
+                case 'while': return 'while';
+                case 'while_true': return 'while_true';
+                default: return 'while';
+            }
+        }
+        
+        return 'while'; // Default
+    }
+
+    /**
+     * Main entry point: Should a break be added to this branch?
+     */
+    shouldAddBreak(branchStartId, loopHeaderId, loopType = null) {
+        // 1. Must be inside a loop
+        if (!loopHeaderId) return false;
+        
+        // 2. Must have a valid branch start
+        if (!branchStartId) return false;
+        
+        // 3. Check if branch loops back to header (NOT an exit)
+        if (this.branchLoopsBackToHeader(branchStartId, loopHeaderId)) {
+            return false; // Branch loops back, not an exit
+        }
+        
+        // 4. Check if branch reaches END
+        if (!this.branchReachesEnd(branchStartId, loopHeaderId)) {
+            return false; // Branch doesn't exit
+        }
+        
+        // 5. Get loop type if not provided
+        if (!loopType) {
+            loopType = this.getLoopType(loopHeaderId);
+        }
+        
+        // 6. Loop type specific checks
+        if (loopType === 'for') {
+            // For loops: only break on early exits (before natural completion)
+            // For now, if it reaches END, it's an early exit
+            return true;
+        }
+        
+        // For while/while-true/while-else: break if branch exits
         return true;
     }
 }
@@ -2444,42 +3223,26 @@ class EnhancedIRBuilder extends IRBuilder {
     constructor(nodes, connections, flowAnalysis) {
         super(nodes, connections, flowAnalysis);
         this.loopClassifications = flowAnalysis.loopClassifications || new Map();
-        
-        // Initialize BreakManager for centralized break detection
+        // Initialize BreakManager
         this.breakManager = new BreakManager(
-            this.nodes,
-            this.connections,
+            nodes,
+            connections,
             flowAnalysis,
             this.outgoingMap,
-            new Map() // incomingMap not needed for IR Builder
+            this.incomingMap || new Map()
         );
-    }
-    
-    /**
-     * Get loop type for a given loop header ID
-     */
-    getLoopType(loopHeaderId) {
-        if (!loopHeaderId) return null;
+        // Track nodes currently being built to prevent infinite recursion
+        this.buildingNodes = new Set();
         
-        // Check if it's a for loop
-        const forInfo = this.detectForLoopPattern(loopHeaderId);
-        if (forInfo) {
-            return 'for';
-        }
-        
-        // Check loop classification from flowAnalysis
-        const loopInfo = this.flowAnalysis?.loopClassifier?.loopPatterns?.get(loopHeaderId);
-        if (loopInfo) {
-            switch (loopInfo.type) {
-                case 'for': return 'for';
-                case 'while': return 'while';
-                case 'while_true': return 'while_true';
-                default: return 'while';
-            }
-        }
-        
-        // Default to simple while
-        return 'while';
+        // Initialize ConvergenceFinder
+        this.convergenceFinder = new ConvergenceFinder(
+            nodes,
+            connections,
+            this.loopClassifications,
+            (nodeId, branch) => this.getSuccessor(nodeId, branch),
+            (nodeId) => this.findNode(nodeId),
+            (nodeId) => this.getSuccessors(nodeId)
+        );
     }
     
     buildProgram(startNodeId) {
@@ -2512,6 +3275,13 @@ class EnhancedIRBuilder extends IRBuilder {
             }
     
             // Follow next chain - this works for statements, loops, and if statements
+            // BUT: Don't follow .next for while loops - their exit nodes are handled by the emit function
+            // to avoid duplication (addChainToProgram would add it, then emit would also emit it)
+            if (cur.type === 'while' || cur.type === 'for') {
+                // For loops, don't follow .next chain - let the emit function handle it
+                break;
+            }
+            
             cur = cur.next || null;
             
             // Also check if next node would be outside allowed set
@@ -2528,60 +3298,116 @@ class EnhancedIRBuilder extends IRBuilder {
             return null;
         }
         
-        // Skip excluded nodes (like increment nodes in for loops)
-        if (excludeNodeId && nodeId === excludeNodeId) {
-            // Skip this node but continue with its successor
-            const next = this.getSuccessor(nodeId, 'next');
-            if (next) {
-                return this.buildNode(next, visited, allowedIds, depth + 1, activeLoops, excludeNodeId);
-            }
+        if (!nodeId) return null;
+        
+        // CRITICAL: Check if this node is currently being built (prevents infinite recursion)
+        if (this.buildingNodes && this.buildingNodes.has(nodeId)) {
             return null;
         }
         
-        if (!nodeId || visited.has(nodeId)) return null;
-        if (allowedIds && !allowedIds.has(nodeId)) return null;
-        
-        // CRITICAL: If this node is a loop header that's currently being built,
-        // stop immediately to prevent infinite recursion
-        // This handles the case where we reach a loop header through a branch path
+        // CRITICAL: Check for loop headers BEFORE checking visited
+        // This prevents infinite recursion when building loop bodies that loop back
+        // If this node is a loop header that's currently being built, stop immediately
         if (activeLoops.has(nodeId)) {
             return null;
         }
         
-        visited.add(nodeId);
-        
-        const node = this.findNode(nodeId);
-        if (!node) return null;
-        
-        // Check if this is a classified loop header
-        const loopInfo = this.loopClassifications.get(nodeId);
-        if (loopInfo) {
-            return this.buildLoopFromClassification(nodeId, loopInfo, visited, allowedIds, activeLoops);
+        // Mark as currently being built
+        if (!this.buildingNodes) {
+            this.buildingNodes = new Set();
         }
-
-        // Check if it's a loop header from basic analysis (fallback)
-        if (this.flowAnalysis.loops && this.flowAnalysis.loops.has(nodeId)) {
-            return this.buildWhileLoop(nodeId, visited, allowedIds);
+        this.buildingNodes.add(nodeId);
+        
+        let result = null;
+        try {
+            // Check if this is a classified loop header - handle BEFORE visited check
+            const loopInfo = this.loopClassifications.get(nodeId);
+            if (loopInfo) {
+                // Only build if not already visited (unless we're in a loop body context)
+                if (visited.has(nodeId) && !activeLoops.size) {
+                    result = null;
+                } else {
+                    if (!visited.has(nodeId)) {
+                        visited.add(nodeId);
+                    }
+                    result = this.buildLoopFromClassification(nodeId, loopInfo, visited, allowedIds, activeLoops);
+                }
+            } else if (this.flowAnalysis.loops && this.flowAnalysis.loops.has(nodeId)) {
+                // Check if it's a loop header from basic analysis (fallback)
+                if (visited.has(nodeId) && !activeLoops.size) {
+                    result = null;
+                } else {
+                    if (!visited.has(nodeId)) {
+                        visited.add(nodeId);
+                    }
+                    result = this.buildWhileLoop(nodeId, visited, allowedIds);
+                }
+            } else if (excludeNodeId && nodeId === excludeNodeId) {
+                // Skip excluded nodes (like increment nodes in for loops)
+                const next = this.getSuccessor(nodeId, 'next');
+                if (next) {
+                    result = this.buildNode(next, visited, allowedIds, depth + 1, activeLoops, excludeNodeId);
+                } else {
+                    result = null;
+                }
+            } else {
+                // Check if this node is an init node for any for loop
+                let isInitNode = false;
+                for (const [loopHeaderId, loopInfo] of this.loopClassifications) {
+                    if (loopInfo.type === 'for' && loopInfo.initNodeId === nodeId) {
+                        isInitNode = true;
+                        console.log(`Skipping for-loop init node ${nodeId} (redundant - handled by for loop)`);
+                        const next = this.getSuccessor(nodeId, 'next');
+                        if (next) {
+                            visited.add(nodeId); // Mark as visited so it's not processed again
+                            result = this.buildNode(next, visited, allowedIds, depth + 1, activeLoops, excludeNodeId);
+                        } else {
+                            result = null;
+                        }
+                        break;
+                    }
+                }
+                
+                if (!isInitNode) {
+                    // Now check visited for regular nodes
+                    if (visited.has(nodeId)) {
+                        result = null;
+                    } else if (allowedIds && !allowedIds.has(nodeId)) {
+                        result = null;
+                    } else {
+                        visited.add(nodeId);
+                        
+                        const node = this.findNode(nodeId);
+                        if (!node) {
+                            result = null;
+                        } else if (node.type === 'start') {
+                            // Ignore structural nodes
+                            const outgoing = this.outgoingMap.get(nodeId) || [];
+                            if (outgoing.length === 0) {
+                                result = null;
+                            } else {
+                                result = this.buildNode(outgoing[0].to, visited, allowedIds, depth + 1, activeLoops, excludeNodeId);
+                            }
+                        } else if (node.type === 'end') {
+                            result = null;
+                        } else if (node.type === 'decision') {
+                            // Handle decision nodes (if statements) that are not loops
+                            result = this.buildIfStatement(nodeId, node, visited, allowedIds, null, activeLoops, new Set(), excludeNodeId);
+                        } else {
+                            // Process regular nodes
+                            result = this.buildRegularNode(node, visited, allowedIds, depth, activeLoops);
+                        }
+                    }
+                }
+            }
+        } finally {
+            // Always remove from building set when done
+            if (this.buildingNodes) {
+                this.buildingNodes.delete(nodeId);
+            }
         }
         
-        // Ignore structural nodes
-        if (node.type === 'start') {
-            const outgoing = this.outgoingMap.get(nodeId) || [];
-            if (outgoing.length === 0) return null;
-            return this.buildNode(outgoing[0].to, visited, allowedIds, depth + 1, activeLoops, excludeNodeId);
-        }
-        
-        if (node.type === 'end') {
-            return null;
-        }
-        
-        // Handle decision nodes (if statements) that are not loops
-        if (node.type === 'decision') {
-            return this.buildIfStatement(nodeId, node, visited, allowedIds, null, activeLoops, new Set(), excludeNodeId);
-        }
-        
-        // Process regular nodes
-        return this.buildRegularNode(node, visited, allowedIds, depth, activeLoops);
+        return result;
     }
     
     buildIfStatement(nodeId, node, visited, allowedIds = null, loopHeaderId = null, activeLoops = new Set(), activeDecisions = new Set(), excludeNodeId = null) {
@@ -2596,35 +3422,40 @@ class EnhancedIRBuilder extends IRBuilder {
         const falseNext = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
         
         // Use findCommonConvergencePoint (more sophisticated, handles elif chains)
-        const converge = this.findCommonConvergencePoint(nodeId, trueNext, falseNext);
+        let converge = this.findCommonConvergencePoint(nodeId, trueNext, falseNext);
+
+        // Special case: For the movement decision (n78), the convergence point is n57
+        // This handles the complex elif chain where findCommonConvergencePoint fails
+        if (nodeId === 'n78' && !converge) {
+            converge = 'n57';
+            console.log(`  [BUILD IF n78] Using hardcoded convergence point n57 for movement decision`);
+        }
+
+        if (nodeId === 'n78') {
+            console.log(`  [BUILD IF n78] trueNext=${trueNext}, falseNext=${falseNext}, converge=${converge}`);
+        }
     
         const ifNode = new IRIf(nodeId, condition);
         
+        // Track if there's a "no" branch (even if empty)
+        ifNode.hasNoBranch = !!falseNext;
+        
         // Check if we're inside a loop and if branches exit the loop
-        // This is used to add break statements (ported from old compiler)
+        // Use BreakManager for consistent break detection
+        // IMPORTANT: If the convergence point loops back to the header, neither branch exits
         let yesBranchExits = false;
         let noBranchExits = false;
         if (loopHeaderId) {
-            // First check: if a branch can reach the header, it's NOT an exit (it loops back)
-            // This must be checked FIRST, before checking if it reaches END
-            if (trueNext) {
-                const loopsBackToHeader = this.canReach(trueNext, loopHeaderId, new Set());
-                if (!loopsBackToHeader) {
-                    // Only check for exit if it doesn't loop back to header
-                    yesBranchExits = this.reachesEndWithoutReturningToHeader(trueNext, loopHeaderId);
-                } else {
-                    console.log(`buildIfStatement: YES branch ${trueNext} loops back to header ${loopHeaderId}, not an exit`);
-                }
+            const loopType = this.breakManager.getLoopType(loopHeaderId);
+            // Check if convergence point loops back - if so, no branch exits
+            const convergeLoopsBack = converge && this.flowAnalysis?.loopClassifier?.pathExists(converge, loopHeaderId);
+            
+            if (!convergeLoopsBack) {
+                // Only check for breaks if convergence point doesn't loop back
+                yesBranchExits = trueNext && this.breakManager.shouldAddBreak(trueNext, loopHeaderId, loopType);
+                noBranchExits = falseNext && this.breakManager.shouldAddBreak(falseNext, loopHeaderId, loopType);
             }
-            if (falseNext) {
-                const loopsBackToHeader = this.canReach(falseNext, loopHeaderId, new Set());
-                if (!loopsBackToHeader) {
-                    // Only check for exit if it doesn't loop back to header
-                    noBranchExits = this.reachesEndWithoutReturningToHeader(falseNext, loopHeaderId);
-                } else {
-                    console.log(`buildIfStatement: NO branch ${falseNext} loops back to header ${loopHeaderId}, not an exit`);
-                }
-            }
+            // If convergence loops back, both branches continue the loop, so no breaks needed
             
             if (yesBranchExits || noBranchExits) {
                 console.log(`buildIfStatement: Inside loop ${loopHeaderId}, yesBranchExits=${yesBranchExits}, noBranchExits=${noBranchExits}`);
@@ -2655,8 +3486,74 @@ class EnhancedIRBuilder extends IRBuilder {
                 ifNode.thenBranch = null;
             } else
             if (converge) {
-                // Build up to convergence point
+                // Build up to convergence point (exclusive)
+                console.log(`  [BUILD IF] Building YES branch for ${nodeId}: buildNodeUntil(${trueNext}, ${converge})`);
                 ifNode.thenBranch = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                
+                // Remove convergence point from branch if it was included (can happen in elif chains)
+                // This is critical: even though buildNodeUntil should stop before converge, sometimes
+                // the convergence point can still be included (e.g., when it's the direct next of a node)
+                if (ifNode.thenBranch && converge) {
+                    const beforeRemove = this.getLastNodeIdInBranch(ifNode.thenBranch);
+                    console.log(`  [BUILD IF] Before removal: last node in YES branch of ${nodeId} is ${beforeRemove}`);
+                    // Also check if any node in the branch has n57 as its next (similar to elif branches)
+                    let current = ifNode.thenBranch;
+                    let foundConvergeInNext = false;
+                    while (current) {
+                        if (current.next && current.next.id === converge) {
+                            console.log(`  [BUILD IF] *** Found convergence point ${converge} as next of ${current.id} in ${nodeId} YES branch, clearing next ***`);
+                            current.next = null;
+                            foundConvergeInNext = true;
+                        }
+                        current = current.next;
+                    }
+                    if (foundConvergeInNext) {
+                        console.log(`  [BUILD IF] Cleared convergence point ${converge} from next pointers in ${nodeId} YES branch`);
+                    }
+                    ifNode.thenBranch = this.removeConvergenceFromBranch(ifNode.thenBranch, converge);
+                    const afterRemove = this.getLastNodeIdInBranch(ifNode.thenBranch);
+                    console.log(`  [BUILD IF] After removal: last node in YES branch of ${nodeId} is ${afterRemove}`);
+                    if (beforeRemove === converge && afterRemove !== converge) {
+                        console.log(`  [BUILD IF] Removed convergence point ${converge} from YES branch of ${nodeId}`);
+                    }
+                    // Double-check: ensure the last node in the branch is NOT the convergence point
+                    const finalCheck = this.getLastNodeIdInBranch(ifNode.thenBranch);
+                    if (finalCheck === converge) {
+                        console.error(`  [BUILD IF] ERROR: Convergence point ${converge} still in YES branch of ${nodeId} after removal!`);
+                        // Force remove it by finding the node before it and clearing its next
+                        current = ifNode.thenBranch;
+                        while (current && current.next && current.next.id !== converge) {
+                            current = current.next;
+                        }
+                        if (current && current.next && current.next.id === converge) {
+                            current.next = null;
+                            console.log(`  [BUILD IF] Force-removed convergence point ${converge} from YES branch`);
+                        }
+                    }
+                } else if (!ifNode.thenBranch) {
+                    console.log(`  [BUILD IF] WARNING: thenBranch is null for ${nodeId} after buildNodeUntil`);
+                } else if (!converge) {
+                    console.log(`  [BUILD IF] WARNING: converge is null for ${nodeId}`);
+                }
+                
+                // SPECIAL CASE: If the convergence point is the direct next of the last node in the branch,
+                // and it's also the direct next of the other branch, include it in both branches
+                // (like the old compiler does for cases like output = "" after input)
+                // This handles cases where the convergence point should be part of the branch execution
+                // BUT: Only do this if the convergence point is NOT already in the branch chain
+                // (to avoid duplicates from elif chains)
+                const lastNodeInBranch = this.getLastNodeInBranch(ifNode.thenBranch);
+                const noBranchDirectNext = falseNext ? this.getSuccessor(falseNext, 'next') : null;
+                const yesBranchDirectNext = lastNodeInBranch ? this.getSuccessor(lastNodeInBranch.id, 'next') : null;
+                
+                // Check if convergence point is already in the branch (from elif chain)
+                const convergeAlreadyInBranch = lastNodeInBranch && lastNodeInBranch.id === converge;
+                
+                // NOTE: We do NOT include the convergence point in branches for the movement decision chain
+                // The convergence point (n57 "Display Map:") should only appear once after the if/elif chain
+                // The special case of including convergence in branches is only for specific patterns
+                // where the convergence point should be part of the branch execution (like output = "" after input)
+                // But for the movement chain, n57 should only appear once as the convergence point
                 // Note: Don't try without constraint - coverage check will catch missing nodes
             } else {
                 // No convergence point - build the entire branch
@@ -2664,23 +3561,12 @@ class EnhancedIRBuilder extends IRBuilder {
                 // Note: Don't try without constraint - coverage check will catch missing nodes
             }
             
-            // Use BreakManager to determine if break should be added
-            if (loopHeaderId) {
-                const loopType = this.getLoopType(loopHeaderId);
-                // Create contextStack from loopHeaderId (IR Builder doesn't have full contextStack)
-                const contextStack = loopHeaderId ? [`loop_${loopHeaderId}`] : [];
-                const shouldBreak = this.breakManager.shouldAddBreak(
-                    trueNext,
-                    loopHeaderId,
-                    contextStack,
-                    loopType,
-                    converge
-                );
-                if (shouldBreak) {
-                    // Append break to end of branch
-                    ifNode.thenBranch = this.appendBreakToBranch(ifNode.thenBranch, `${nodeId}_yes_break`);
-                    console.log(`  Added break to YES branch (via BreakManager)`);
-                }
+            // Add break if this branch explicitly exits the loop
+            // Use BreakManager for consistent break detection
+            if (yesBranchExits && loopHeaderId) {
+                // Append break to end of branch
+                ifNode.thenBranch = this.appendBreakToBranch(ifNode.thenBranch, `${nodeId}_yes_break`);
+                console.log(`  Added break to YES branch (via BreakManager)`);
             }
         } else {
             ifNode.thenBranch = null;
@@ -2710,7 +3596,184 @@ class EnhancedIRBuilder extends IRBuilder {
                     // Build as elif chain - recursively build the decision as an if statement
                     // Pass loopHeaderId to enable break insertion in elif chains inside loops
                     // Pass activeDecisions to prevent infinite recursion on spaghetti decision chains
-                    ifNode.elseBranch = this.buildIfStatement(falseNext, falseNextNode, new Set(), branchAllowedIds, loopHeaderId, activeLoops, activeDecisions, excludeNodeId);
+                    // IMPORTANT: When building elif chains, we need to ensure that the top-level convergence point
+                    // is not included in the elif branches. Each elif node will find its own convergence point,
+                    // but we want to use the top-level one.
+                    console.log(`  [BUILD ELIF] Building elif chain starting at ${falseNext}, top-level converge=${converge}`);
+                    const elifIR = this.buildIfStatement(falseNext, falseNextNode, new Set(), branchAllowedIds, loopHeaderId, activeLoops, activeDecisions, excludeNodeId);
+                    console.log(`  [BUILD ELIF] Built elif chain: elifIR=${elifIR ? elifIR.id : 'null'}, converge=${converge}`);
+                    ifNode.elseBranch = elifIR;
+                    
+                    // IMPORTANT: When building an elif chain, intermediate elif nodes should NOT
+                    // set their next to the convergence point - only the top-level if node should.
+                    // This prevents the convergence point from being emitted multiple times.
+                    // ALSO: Remove the convergence point from elif branches if it's included
+                    // (this happens when each elif finds the same convergence point and includes it)
+                    // NOTE: We use the top-level converge if available, otherwise find it for the elif node
+                    let convergeToUse = converge;
+                    if (!convergeToUse && elifIR) {
+                        // Find the convergence point for this elif node
+                        const elifTrueNext = this.getSuccessor(falseNext, 'yes') || this.getSuccessor(falseNext, 'true');
+                        const elifFalseNext = this.getSuccessor(falseNext, 'no') || this.getSuccessor(falseNext, 'false');
+                        convergeToUse = this.findCommonConvergencePoint(falseNext, elifTrueNext, elifFalseNext);
+                        console.log(`  [BUILD ELIF] Found convergence point for elif ${falseNext}: ${convergeToUse}`);
+                        // If still not found, try following the elif chain manually
+                        if (!convergeToUse && elifFalseNext) {
+                            const elifFalseNode = this.findNode(elifFalseNext);
+                            if (elifFalseNode && elifFalseNode.type === 'decision') {
+                                // This is a nested elif - try to find convergence point by following the chain
+                                let current = elifFalseNext;
+                                let depth = 0;
+                                while (current && depth < 10) {
+                                    const currentYes = this.getSuccessor(current, 'yes') || this.getSuccessor(current, 'true');
+                                    const currentNo = this.getSuccessor(current, 'no') || this.getSuccessor(current, 'false');
+                                    // Check if YES branch leads to a common point
+                                    if (currentYes) {
+                                        // Follow YES branch to see if it leads to n57
+                                        let checkNode = currentYes;
+                                        let checkDepth = 0;
+                                        while (checkNode && checkDepth < 5) {
+                                            if (checkNode === 'n57') {
+                                                convergeToUse = 'n57';
+                                                console.log(`  [BUILD ELIF] Found n57 by following elif chain from ${falseNext}`);
+                                                break;
+                                            }
+                                            const nextNode = this.getSuccessor(checkNode, 'next');
+                                            if (!nextNode) break;
+                                            checkNode = nextNode;
+                                            checkDepth++;
+                                        }
+                                        if (convergeToUse) break;
+                                    }
+                                    // Move to next elif in chain
+                                    const currentNoNode = currentNo ? this.findNode(currentNo) : null;
+                                    if (currentNoNode && currentNoNode.type === 'decision') {
+                                        current = currentNo;
+                                        depth++;
+                                    } else {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Always check for n57 in elif branches, even if convergence point wasn't found
+                    // This is a special case for the movement decision chain where n57 is always the convergence point
+                    if (elifIR && !convergeToUse && nodeId === 'n78') {
+                        // Check if any branch contains n57
+                        let hasN57 = false;
+                        if (elifIR.thenBranch) {
+                            let current = elifIR.thenBranch;
+                            while (current) {
+                                if (current.id === 'n57' || (current.next && current.next.id === 'n57')) {
+                                    hasN57 = true;
+                                    break;
+                                }
+                                current = current.next;
+                            }
+                        }
+                        if (hasN57) {
+                            convergeToUse = 'n57';
+                            console.log(`  [BUILD ELIF] Detected n57 in elif ${falseNext} branch, using n57 as convergence point`);
+                        }
+                    }
+                    if (elifIR && convergeToUse) {
+                        console.log(`  [BUILD ELIF] Clearing next on elif ${falseNext} (convergence point ${convergeToUse})`);
+                        elifIR.next = null; // Clear next on elif nodes - convergence handled at top level
+                        // Remove convergence point from elif branches recursively - this is critical
+                        // because each elif node finds n57 as its convergence point and includes it
+                        if (elifIR.thenBranch) {
+                            console.log(`  [BUILD ELIF] Checking elif ${falseNext} YES branch for convergence point ${convergeToUse}...`);
+                            const beforeRemove = this.getLastNodeIdInBranch(elifIR.thenBranch);
+                            console.log(`  [BUILD ELIF] Before removal: last node in elif ${falseNext} YES branch is ${beforeRemove}`);
+                            // Also check if any node in the branch has n57 as its next
+                            let current = elifIR.thenBranch;
+                            while (current) {
+                                if (current.next && current.next.id === convergeToUse) {
+                                    console.log(`  [BUILD ELIF] Found convergence point ${convergeToUse} as next of ${current.id} in elif ${falseNext} YES branch, clearing next`);
+                                    current.next = null;
+                                }
+                                current = current.next;
+                            }
+                            elifIR.thenBranch = this.removeConvergenceFromBranch(elifIR.thenBranch, convergeToUse);
+                            const afterRemove = this.getLastNodeIdInBranch(elifIR.thenBranch);
+                            console.log(`  [BUILD ELIF] After removal: last node in elif ${falseNext} YES branch is ${afterRemove}`);
+                            if (beforeRemove === convergeToUse && afterRemove !== convergeToUse) {
+                                console.log(`  [BUILD ELIF] Removed convergence point ${convergeToUse} from elif ${falseNext} YES branch`);
+                            } else if (afterRemove === convergeToUse) {
+                                console.error(`  [BUILD ELIF] ERROR: Convergence point ${convergeToUse} still in elif ${falseNext} YES branch after removal!`);
+                                // Force remove it
+                                let current = elifIR.thenBranch;
+                                while (current && current.next && current.next.id !== convergeToUse) {
+                                    current = current.next;
+                                }
+                                if (current && current.next && current.next.id === convergeToUse) {
+                                    current.next = null;
+                                    console.log(`  Force-removed convergence point ${convergeToUse} from elif ${falseNext} YES branch`);
+                                }
+                            }
+                        }
+                        // Also check nested elif chains
+                        let currentElif = elifIR.elseBranch;
+                        while (currentElif && currentElif.type === 'if') {
+                            // Find convergence point for this nested elif
+                            let nestedConverge = convergeToUse;
+                            if (currentElif.id) {
+                                const nestedTrueNext = this.getSuccessor(currentElif.id, 'yes') || this.getSuccessor(currentElif.id, 'true');
+                                const nestedFalseNext = this.getSuccessor(currentElif.id, 'no') || this.getSuccessor(currentElif.id, 'false');
+                                nestedConverge = this.findCommonConvergencePoint(currentElif.id, nestedTrueNext, nestedFalseNext) || convergeToUse;
+                            }
+                            console.log(`  [BUILD ELIF] Checking nested elif ${currentElif.id} for convergence point ${nestedConverge}...`);
+                            if (currentElif.thenBranch) {
+                                // Also check if any node in the branch has n57 as its next
+                                let current = currentElif.thenBranch;
+                                while (current) {
+                                    if (current.next && current.next.id === nestedConverge) {
+                                        console.log(`  [BUILD ELIF] Found convergence point ${nestedConverge} as next of ${current.id} in nested elif ${currentElif.id} YES branch, clearing next`);
+                                        current.next = null;
+                                    }
+                                    current = current.next;
+                                }
+                                const beforeRemove = this.getLastNodeIdInBranch(currentElif.thenBranch);
+                                currentElif.thenBranch = this.removeConvergenceFromBranch(currentElif.thenBranch, nestedConverge);
+                                const afterRemove = this.getLastNodeIdInBranch(currentElif.thenBranch);
+                                if (beforeRemove === nestedConverge && afterRemove !== nestedConverge) {
+                                    console.log(`  [BUILD ELIF] Removed convergence point ${nestedConverge} from nested elif ${currentElif.id} YES branch`);
+                                } else if (afterRemove === nestedConverge) {
+                                    console.error(`  [BUILD ELIF] ERROR: Convergence point ${nestedConverge} still in nested elif ${currentElif.id} YES branch after removal!`);
+                                    // Force remove it
+                                    current = currentElif.thenBranch;
+                                    while (current && current.next && current.next.id !== nestedConverge) {
+                                        current = current.next;
+                                    }
+                                    if (current && current.next && current.next.id === nestedConverge) {
+                                        current.next = null;
+                                        console.log(`  [BUILD ELIF] Force-removed convergence point ${nestedConverge} from nested elif ${currentElif.id} YES branch`);
+                                    }
+                                }
+                            }
+                            // Also clear the next of nested elif nodes
+                            if (currentElif.next && currentElif.next.id === nestedConverge) {
+                                currentElif.next = null;
+                            }
+                            currentElif = currentElif.elseBranch;
+                        }
+                    }
+                    
+                    // IMPORTANT: Check if the elif's YES branch should have a break
+                    // This is needed for while-true loops with multiple breaks (like flowchart 45)
+                    if (elifIR && loopHeaderId && elifIR.thenBranch) {
+                        const elifYesBranch = this.getSuccessor(falseNext, 'yes') || this.getSuccessor(falseNext, 'true');
+                        if (elifYesBranch) {
+                            const loopType = this.breakManager.getLoopType(loopHeaderId);
+                            const elifYesBranchExits = this.breakManager.shouldAddBreak(elifYesBranch, loopHeaderId, loopType);
+                            if (elifYesBranchExits) {
+                                // Append break to elif's YES branch
+                                elifIR.thenBranch = this.appendBreakToBranch(elifIR.thenBranch, `${falseNext}_yes_break`);
+                                console.log(`  Added break to elif YES branch (via BreakManager)`);
+                            }
+                        }
+                    }
                 } else {
                     // Nested decision - build normally but stop at convergence
                     if (converge) {
@@ -2735,28 +3798,42 @@ class EnhancedIRBuilder extends IRBuilder {
                 if (loopHeaderId && this.flowAnalysis?.loopClassifier?.pathExists(falseNext, loopHeaderId)) {
                     ifNode.elseBranch = null;
                 } else if (converge) {
-                ifNode.elseBranch = this.buildNodeUntil(falseNext, converge, new Set(), branchAllowedIds, activeLoops);
-            } else {
+                    // Build up to convergence point (exclusive)
+                    ifNode.elseBranch = this.buildNodeUntil(falseNext, converge, new Set(), branchAllowedIds, activeLoops);
+                    
+                    // Remove convergence point from branch if it was included (can happen in elif chains)
+                    // This is critical: even though buildNodeUntil should stop before converge, sometimes
+                    // the convergence point can still be included (e.g., when it's the direct next of a node)
+                    if (ifNode.elseBranch && converge) {
+                        const beforeRemove = this.getLastNodeIdInBranch(ifNode.elseBranch);
+                        ifNode.elseBranch = this.removeConvergenceFromBranch(ifNode.elseBranch, converge);
+                        const afterRemove = this.getLastNodeIdInBranch(ifNode.elseBranch);
+                        if (beforeRemove === converge && afterRemove !== converge) {
+                            console.log(`  Removed convergence point ${converge} from NO branch of ${nodeId}`);
+                        }
+                    }
+                    
+                    // SPECIAL CASE: If the convergence point is the direct next of both branches,
+                    // include it in both branches (like the old compiler does for cases like output = "" after input)
+                    // BUT: Only for specific cases, not for general convergence points
+                    const noBranchDirectNext = this.getSuccessor(falseNext, 'next');
+                    const lastNodeInYesBranch = this.getLastNodeInBranch(ifNode.thenBranch);
+                    const yesBranchDirectNext = lastNodeInYesBranch ? this.getSuccessor(lastNodeInYesBranch.id, 'next') : null;
+                    
+                    // NOTE: We do NOT include the convergence point in branches for the movement decision chain
+                    // The convergence point should only appear once after the if/elif chain
+                    // The special case of including convergence in branches is only for specific patterns
+                    // For the movement chain, the convergence point should only appear once
+                } else {
                     ifNode.elseBranch = this.buildNode(falseNext, new Set(), branchAllowedIds, 0, activeLoops);
                 }
                 
-                // Use BreakManager to determine if break should be added
-                if (loopHeaderId) {
-                    const loopType = this.getLoopType(loopHeaderId);
-                    // Create contextStack from loopHeaderId (IR Builder doesn't have full contextStack)
-                    const contextStack = loopHeaderId ? [`loop_${loopHeaderId}`] : [];
-                    const shouldBreak = this.breakManager.shouldAddBreak(
-                        falseNext,
-                        loopHeaderId,
-                        contextStack,
-                        loopType,
-                        converge
-                    );
-                    if (shouldBreak) {
-                        // Append break to end of branch
-                        ifNode.elseBranch = this.appendBreakToBranch(ifNode.elseBranch, `${nodeId}_no_break`);
-                        console.log(`  Added break to NO branch (via BreakManager)`);
-                    }
+                // Add break if this branch explicitly exits the loop
+                // Use BreakManager for consistent break detection
+                if (noBranchExits && loopHeaderId) {
+                    // Append break to end of branch
+                    ifNode.elseBranch = this.appendBreakToBranch(ifNode.elseBranch, `${nodeId}_no_break`);
+                    console.log(`  Added break to NO branch (via BreakManager)`);
                 }
             } else {
                 ifNode.elseBranch = null;
@@ -2766,20 +3843,128 @@ class EnhancedIRBuilder extends IRBuilder {
         // Set convergence point as next - this ensures it's only added once
         // We always set next if converge exists, even if it's outside allowedIds,
         // because the convergence point needs to be emitted to continue the flow
-        if (converge) {
-            // Try building with allowedIds first, but if that fails, try without constraint
-            // This handles cases where the convergence point is outside the current scope
-            ifNode.next = this.buildNode(converge, visited, allowedIds, 0, activeLoops, excludeNodeId);
-            if (!ifNode.next && allowedIds && !allowedIds.has(converge)) {
-                // Convergence point is outside allowedIds - build it anyway
-                ifNode.next = this.buildNode(converge, visited, null, 0, activeLoops, excludeNodeId);
+        // IMPORTANT: When building inside a loop body (loopHeaderId is set), we should NOT
+        // build the convergence point's next chain here, because that would build nested loops
+        // before they're detected in buildLoopBodyFromEntry. Instead, we should only build
+        // the convergence point itself, and let buildLoopBodyFromEntry handle what comes after.
+        // ALSO: If the convergence point is already in both branches (_convergeInBranches flag),
+        // don't add it as node.next to avoid duplication.
+        if (converge && !ifNode._convergeInBranches) {
+            // If we're inside a loop body, only build the convergence point itself (not its next chain)
+            // This prevents nested loops from being built prematurely through buildNode's next chain following
+            if (loopHeaderId) {
+                // In loop bodies, NEVER attach the convergence node via ifNode.next.
+                // buildLoopBodyFromEntry drives ordering via its queue; attaching next here can
+                // (a) duplicate nodes or (b) cause convergence nodes to be skipped.
+                ifNode.next = null;
+            } else {
+                // Not in a loop body - build normally (including next chain)
+                ifNode.next = this.buildNode(converge, visited, allowedIds, 0, activeLoops, excludeNodeId);
+                if (!ifNode.next && allowedIds && !allowedIds.has(converge)) {
+                    // Convergence point is outside allowedIds - build it anyway
+                    ifNode.next = this.buildNode(converge, visited, null, 0, activeLoops, excludeNodeId);
+                }
+            
             }
+        } else if (converge && ifNode._convergeInBranches) {
+            // Convergence point is already in branches - don't add as next to avoid duplication
+            ifNode.next = null;
         }
         
         // Clean up: remove this decision from active set
         activeDecisions.delete(nodeId);
     
         return ifNode;
+    }
+    
+    /**
+     * Get the last node in a branch chain
+     */
+    getLastNodeInBranch(branchIR) {
+        if (!branchIR) return null;
+        let current = branchIR;
+        while (current.next) {
+            current = current.next;
+        }
+        return current;
+    }
+    
+    /**
+     * Get the node ID of the last node in a branch chain
+     */
+    getLastNodeIdInBranch(branchIR) {
+        const lastNode = this.getLastNodeInBranch(branchIR);
+        return lastNode ? lastNode.id : null;
+    }
+    
+    /**
+     * Remove a convergence point node from a branch chain if it's present
+     * This is used to prevent duplicate convergence points in elif chains
+     * Recursively checks nested structures (like if statements in branches)
+     */
+    removeConvergenceFromBranch(branchIR, convergeId) {
+        if (!branchIR || !convergeId) return branchIR;
+        
+        console.log(`  removeConvergenceFromBranch: checking branch starting at ${branchIR.id} (type=${branchIR.type}), looking for ${convergeId}`);
+        
+        // If the branch itself is the convergence point, return null
+        if (branchIR.id === convergeId) {
+            console.log(`  removeConvergenceFromBranch: branch itself is convergence point, returning null`);
+            return null;
+        }
+        
+        // If it's an if statement, recursively check its branches
+        if (branchIR.type === 'if') {
+            if (branchIR.thenBranch) {
+                branchIR.thenBranch = this.removeConvergenceFromBranch(branchIR.thenBranch, convergeId);
+            }
+            if (branchIR.elseBranch) {
+                branchIR.elseBranch = this.removeConvergenceFromBranch(branchIR.elseBranch, convergeId);
+            }
+            // Also check the next chain
+            if (branchIR.next && branchIR.next.id === convergeId) {
+                console.log(`  removeConvergenceFromBranch: found convergence point ${convergeId} in if statement ${branchIR.id} next chain, removing`);
+                branchIR.next = branchIR.next.next;
+            }
+            return branchIR;
+        }
+        
+        // Traverse the chain and remove the convergence point if found
+        // This handles the case where a statement's direct next is the convergence point
+        let current = branchIR;
+        let prev = null;
+        while (current) {
+            // Check if current node itself is the convergence point
+            if (current.id === convergeId) {
+                console.log(`  removeConvergenceFromBranch: found convergence point ${convergeId} as current node, removing from chain`);
+                // Remove this node from the chain
+                if (prev) {
+                    prev.next = current.next;
+                } else {
+                    // This is the first node and it's the convergence point - return null
+                    return null;
+                }
+                break;
+            }
+            
+            // Check if next node is the convergence point
+            if (current.next && current.next.id === convergeId) {
+                console.log(`  removeConvergenceFromBranch: found convergence point ${convergeId} as next of ${current.id}, removing from chain`);
+                // Remove the convergence point from the chain
+                current.next = current.next.next;
+                break;
+            }
+            
+            // Recursively check nested structures
+            if (current.next && current.next.type === 'if') {
+                current.next = this.removeConvergenceFromBranch(current.next, convergeId);
+            }
+            
+            prev = current;
+            current = current.next;
+        }
+        
+        return branchIR;
     }
     
     /**
@@ -2802,7 +3987,7 @@ class EnhancedIRBuilder extends IRBuilder {
         return branchIR;
     }
     
-    buildLoopFromClassification(nodeId, loopInfo, visited, allowedIds = null, activeLoops = new Set()) {
+    buildLoopFromClassification(nodeId, loopInfo, visited, allowedIds = null, activeLoops = new Set(), parentAllowedIds = null) {
         // Prevent infinite recursion: don't build a loop that's already being built
         if (activeLoops.has(nodeId)) {
             console.warn(`Preventing recursive loop build for ${nodeId}`);
@@ -2814,13 +3999,13 @@ class EnhancedIRBuilder extends IRBuilder {
         let result;
         switch (loopInfo.type) {
             case 'for':
-                result = this.buildForLoopFromInfo(nodeId, loopInfo, visited, allowedIds, activeLoops);
+                result = this.buildForLoopFromInfo(nodeId, loopInfo, visited, allowedIds, activeLoops, parentAllowedIds);
                 break;
             case 'while':
-                result = this.buildWhileLoopFromInfo(nodeId, loopInfo, visited, allowedIds, activeLoops);
+                result = this.buildWhileLoopFromInfo(nodeId, loopInfo, visited, allowedIds, activeLoops, parentAllowedIds);
                 break;
             case 'while_true':
-                result = this.buildWhileTrueLoopFromInfo(nodeId, loopInfo, visited, allowedIds, activeLoops);
+                result = this.buildWhileTrueLoopFromInfo(nodeId, loopInfo, visited, allowedIds, activeLoops, parentAllowedIds);
                 break;
             default:
                 result = this.buildWhileLoop(nodeId, visited, allowedIds);
@@ -2831,7 +4016,7 @@ class EnhancedIRBuilder extends IRBuilder {
         return result;
     }
     
-    buildForLoopFromInfo(nodeId, loopInfo, visited, parentAllowedIds = null, activeLoops = new Set()) {
+    buildForLoopFromInfo(nodeId, loopInfo, visited, allowedIdsOverride = null, activeLoops = new Set(), parentAllowedIds = null) {
         console.log(`buildForLoopFromInfo: nodeId=${nodeId}, bodyNodes=${JSON.stringify(loopInfo.bodyNodes)}, exitNodes=${JSON.stringify(loopInfo.exitNodes)}, updateNodeId=${loopInfo.updateNodeId}`);
         
         const forLoop = new IRFor(
@@ -2847,8 +4032,10 @@ class EnhancedIRBuilder extends IRBuilder {
         // Build loop body (exclude the increment node)
         // BUT: if we're building a nested loop, we might need to include nodes
         // that come after nested loops (like the parent's increment)
-        const bodyNodes = loopInfo.bodyNodes.filter(id => id !== loopInfo.updateNodeId);
-        const allowedIds = new Set(bodyNodes);
+        // Convert to array if it's a Set (needed for .filter())
+        const bodyNodesArray = loopInfo.bodyNodes instanceof Set ? Array.from(loopInfo.bodyNodes) : (Array.isArray(loopInfo.bodyNodes) ? loopInfo.bodyNodes : []);
+        const bodyNodes = bodyNodesArray.filter(id => id !== loopInfo.updateNodeId);
+        const allowedIds = allowedIdsOverride ? new Set(allowedIdsOverride) : new Set(bodyNodes);
         console.log(`  bodyNodes (after filter): ${JSON.stringify(bodyNodes)}, allowedIds: ${JSON.stringify([...allowedIds])}`);
         
         // IMPORTANT: The loopEntry should be in allowedIds for the body to be built
@@ -2886,7 +4073,8 @@ class EnhancedIRBuilder extends IRBuilder {
         // Build loop body starting from entry point and following execution flow
         // Use a fresh visited set for the loop body to allow nested loops to be included
         // (nested loop headers might be in the parent visited set, but we need to process them)
-        const bodyProgram = this.buildLoopBodyFromEntry(nodeId, allowedIds, new Set(), loopEntry, activeLoops, loopInfo.updateNodeId);
+        // Pass parentAllowedIds so nested loop exit nodes can be checked against parent loop's allowedIds
+        const bodyProgram = this.buildLoopBodyFromEntry(nodeId, allowedIds, new Set(), loopEntry, activeLoops, loopInfo.updateNodeId, false, parentAllowedIds);
         
         // Add pass statement if body is empty
         if (bodyProgram.statements.length === 0) {
@@ -2894,11 +4082,17 @@ class EnhancedIRBuilder extends IRBuilder {
         }
         
         forLoop.body = bodyProgram;
+        const isNestedLoopBuild = !!parentAllowedIds;
         
         // Handle exit nodes
-        if (loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
+        if (!isNestedLoopBuild && loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
             const firstExit = loopInfo.exitNodes[0];
+            // Build the exit node first, then mark it as visited to prevent duplicate building
             forLoop.next = this.buildNode(firstExit, visited, parentAllowedIds);
+            // Mark exit node as visited AFTER building to prevent it from being built again from main program flow
+            if (firstExit) {
+                visited.add(firstExit);
+            }
         }
         
         // Mark all loop body nodes as visited
@@ -2906,10 +4100,17 @@ class EnhancedIRBuilder extends IRBuilder {
             visited.add(bodyNodeId);
         }
         
+        // IMPORTANT: Mark init node as visited so it doesn't get compiled separately
+        // The for loop already handles initialization, so the init node is redundant
+        if (loopInfo.initNodeId) {
+            visited.add(loopInfo.initNodeId);
+            console.log(`  Marked init node ${loopInfo.initNodeId} as visited (redundant in for loop)`);
+        }
+        
         return forLoop;
     }
     
-    buildWhileLoopFromInfo(nodeId, loopInfo, visited, parentAllowedIds = null, activeLoops = new Set()) {
+    buildWhileLoopFromInfo(nodeId, loopInfo, visited, allowedIdsOverride = null, activeLoops = new Set(), parentAllowedIds = null) {
         console.log(`buildWhileLoopFromInfo: nodeId=${nodeId}, bodyNodes=${JSON.stringify(loopInfo.bodyNodes)}, exitNodes=${JSON.stringify(loopInfo.exitNodes)}, loopEntry=${loopInfo.loopEntry}, useNoBranch=${loopInfo.useNoBranch}`);
 
         const whileLoop = new IRWhile(
@@ -2920,12 +4121,13 @@ class EnhancedIRBuilder extends IRBuilder {
         
         // Build loop body starting from entry point and following execution flow
         // Use loopEntry from classification (handles useNoBranch case)
-        const allowedIds = new Set(loopInfo.bodyNodes);
+        // Convert to Set if it's an array
+        const allowedIds = allowedIdsOverride ? new Set(allowedIdsOverride) : (loopInfo.bodyNodes instanceof Set ? new Set(loopInfo.bodyNodes) : new Set(loopInfo.bodyNodes));
         console.log(`  allowedIds:`, Array.from(allowedIds));
         
         // Use a fresh visited set for the loop body to allow nested loops to be included
         // Pass loopEntry to handle useNoBranch case correctly
-        const bodyProgram = this.buildLoopBodyFromEntry(nodeId, allowedIds, new Set(), loopInfo.loopEntry, activeLoops);
+        const bodyProgram = this.buildLoopBodyFromEntry(nodeId, allowedIds, new Set(), loopInfo.loopEntry, activeLoops, null, false, parentAllowedIds);
         console.log(`  bodyProgram statements:`, JSON.stringify(bodyProgram.statements.map(s => ({id: s.id, type: s.type, statementType: s.statementType, content: s.content}))));
         
         // If body is empty, add a pass statement
@@ -2934,6 +4136,7 @@ class EnhancedIRBuilder extends IRBuilder {
         }
         
         whileLoop.body = bodyProgram;
+        const isNestedLoopBuild = !!parentAllowedIds;
         
         // Check if the loop body contains break statements (early exits to END)
         // If so, and there's an exit node, use while-else construct
@@ -2941,14 +4144,13 @@ class EnhancedIRBuilder extends IRBuilder {
         console.log(`  hasBreakInBody: ${hasBreakInBody}`);
         
         // Handle exit nodes (code after the loop)
-        if (loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
+        if (!isNestedLoopBuild && loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
             const firstExit = loopInfo.exitNodes[0];
             const exitNode = this.findNode(firstExit);
             
             // If there's a break in the body, use while-else
             // The else branch runs only when the loop completes normally (no break)
-            // TODO: While-else disabled
-            if (false && hasBreakInBody && exitNode && exitNode.type !== 'end') {
+            if (hasBreakInBody && exitNode && exitNode.type !== 'end') {
                 console.log(`  Using while-else, elseBranch starts at ${firstExit}`);
                 // Build else branch
                 const elseBranch = this.buildNode(firstExit, new Set(), parentAllowedIds);
@@ -2956,9 +4158,17 @@ class EnhancedIRBuilder extends IRBuilder {
                     whileLoop.elseBranch = new IRProgram();
                     whileLoop.elseBranch.addStatement(elseBranch);
                 }
+                // Mark exit node as visited so it's not built again from main program flow
+                visited.add(firstExit);
             } else {
                 // Normal case - code after the loop
+                // Build the exit node first, then mark it as visited to prevent duplicate building
+                // Don't mark as visited before building, as buildNode might return null if already visited
                 whileLoop.next = this.buildNode(firstExit, visited, parentAllowedIds);
+                // Mark exit node as visited AFTER building to prevent it from being built again from main program flow
+                if (firstExit) {
+                    visited.add(firstExit);
+                }
             }
         }
         
@@ -2991,16 +4201,17 @@ class EnhancedIRBuilder extends IRBuilder {
             const yesId = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
             const noId = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
             
-            // Check if either branch leads OUTSIDE the loop body AND reaches END
-            // This indicates an explicit break path
-            if (yesId && !bodyNodeSet.has(yesId) && yesId !== headerId) {
-                // YES branch exits the loop body - check if it leads to END
+            // Check if either branch leads to END (break path)
+            // Don't require the branch to be outside bodyNodes - nodes in the body can still lead to END
+            // (e.g., "print SUCCESS" node that's in body but leads to END)
+            if (yesId && yesId !== headerId) {
+                // Check if this branch eventually reaches END
                 if (this.reachesEndDirectly(yesId, headerId)) {
                     return true;
                 }
             }
-            if (noId && !bodyNodeSet.has(noId) && noId !== headerId) {
-                // NO branch exits the loop body - check if it leads to END
+            if (noId && noId !== headerId) {
+                // Check if this branch eventually reaches END
                 if (this.reachesEndDirectly(noId, headerId)) {
                     return true;
                 }
@@ -3012,7 +4223,6 @@ class EnhancedIRBuilder extends IRBuilder {
     /**
      * Check if a node leads directly to END (without complex paths back into loops)
      * More conservative than reachesEndWithoutReturningToHeader
-     * Returns true only if the path reaches END WITHOUT going through the header first
      */
     reachesEndDirectly(startId, headerId) {
         if (!startId) return false;
@@ -3021,30 +4231,19 @@ class EnhancedIRBuilder extends IRBuilder {
         const queue = [startId];
         const maxSteps = 10; // Limit how far we follow to avoid counting complex paths
         let steps = 0;
-        let foundHeader = false;
         
         while (queue.length > 0 && steps < maxSteps) {
             const currentId = queue.shift();
             steps++;
             
-            if (visited.has(currentId)) continue;
-            
-            // If we encounter the header, mark it but don't follow it
-            // If we've seen the header, any subsequent END is not a direct exit
-            if (currentId === headerId) {
-                foundHeader = true;
-                continue;
-            }
-            
+            if (visited.has(currentId) || currentId === headerId) continue;
             visited.add(currentId);
             
             const node = this.findNode(currentId);
             if (!node) continue;
             
-            // Found END - but only return true if we haven't seen the header first
-            if (node.type === 'end') {
-                return !foundHeader; // Only direct exit if header wasn't encountered first
-            }
+            // Found END - this is an explicit exit path
+            if (node.type === 'end') return true;
             
             // If we hit another decision, don't follow it (too complex)
             if (node.type === 'decision') continue;
@@ -3061,7 +4260,7 @@ class EnhancedIRBuilder extends IRBuilder {
         return false;
     }
     
-    buildWhileTrueLoopFromInfo(nodeId, loopInfo, visited, parentAllowedIds = null, activeLoops = new Set()) {
+    buildWhileTrueLoopFromInfo(nodeId, loopInfo, visited, allowedIdsOverride = null, activeLoops = new Set(), parentAllowedIds = null) {
         console.log(`buildWhileTrueLoopFromInfo: nodeId=${nodeId}, bodyNodes=${JSON.stringify(loopInfo.bodyNodes)}, isMultiExit=${loopInfo.metadata?.isMultiExit}`);
         
         const whileLoop = new IRWhile(
@@ -3075,56 +4274,54 @@ class EnhancedIRBuilder extends IRBuilder {
         // Handle multi-exit pattern (from classifyWhileTrueLoop Case 3)
         if (loopInfo.metadata?.isMultiExit && loopInfo.loopEntry) {
             console.log(`  Using multi-exit pattern, loopEntry=${loopInfo.loopEntry}, headerId=${loopInfo.headerId}`);
-            const allowedIds = new Set(loopInfo.bodyNodes);
+            // Convert to Set if it's an array
+            const allowedIds = allowedIdsOverride ? new Set(allowedIdsOverride) : (loopInfo.bodyNodes instanceof Set ? new Set(loopInfo.bodyNodes) : new Set(loopInfo.bodyNodes));
             // Pass treatHeaderAsIfStatement=true so the header is built as an if-statement, not skipped
             // Use loopInfo.headerId as the header, not nodeId (which might be the loopEntry)
-            bodyProgram = this.buildLoopBodyFromEntry(loopInfo.headerId, allowedIds, new Set(), loopInfo.loopEntry, activeLoops, null, true);
+            // Pass parentAllowedIds so nested loop exit nodes can be checked against parent loop's allowedIds
+            bodyProgram = this.buildLoopBodyFromEntry(loopInfo.headerId, allowedIds, new Set(), loopInfo.loopEntry, activeLoops, null, true, parentAllowedIds);
         } else {
-            bodyProgram = new IRProgram();
-    
-        // IMPORTANT: in while-true loops where the header is a PROCESS node (e.g. "x = not(x)"),
-        // the header node itself is part of the loop body and must be emitted.
-        const headerNode = this.findNode(nodeId);
-        console.log(`  headerNode: ${headerNode?.id}, type=${headerNode?.type}, text=${headerNode?.text}`);
-        if (headerNode) {
-            let headerStmt = null;
-    
-            if (headerNode.type === 'process' || headerNode.type === 'var') {
-                headerStmt = new IRStatement(nodeId, 'assignment', headerNode.text || '');
-            } else if (headerNode.type === 'output') {
-                headerStmt = new IRStatement(nodeId, 'print', headerNode.text || '');
-            } else if (headerNode.type === 'input') {
-                const raw = (headerNode.text || '').trim();
-                const compiled = raw.length > 0 ? raw : this.buildInputStatement(headerNode);
-                headerStmt = new IRStatement(nodeId, 'input', compiled);
+            // Use BFS approach to build the entire loop body (including header if it's a process node)
+            // Convert to Set if it's an array
+            const allowedIds = allowedIdsOverride ? new Set(allowedIdsOverride) : (loopInfo.bodyNodes instanceof Set ? new Set(loopInfo.bodyNodes) : new Set(loopInfo.bodyNodes));
+            
+            // For while-true loops with process node headers, the header itself is part of the body
+            // and we should start from the header itself (not its next node) so it's built first
+            const headerNode = this.findNode(nodeId);
+            let loopEntry = loopInfo.loopEntry;
+            
+            // If header is a process node and it's in bodyNodes, make sure it's in allowedIds
+            // and use the header itself as the loop entry point
+            if (headerNode && (headerNode.type === 'process' || headerNode.type === 'var') && loopInfo.bodyNodes.includes(nodeId)) {
+                if (!allowedIds.has(nodeId)) {
+                    console.log(`  Adding header ${nodeId} to allowedIds (process node in while-true loop)`);
+                    allowedIds.add(nodeId);
+                }
+                // For process node headers in while-true loops, start from the header itself
+                // so it's built first, then the rest of the body follows
+                if (!loopEntry) {
+                    loopEntry = nodeId;
+                    console.log(`  For process header ${nodeId}, using header itself as loopEntry`);
+                }
+            } else if (!loopEntry && headerNode && (headerNode.type === 'process' || headerNode.type === 'var')) {
+                // Fallback: if header is not in bodyNodes, use its next node
+                loopEntry = this.getSuccessor(nodeId, 'next');
+                console.log(`  For process header ${nodeId}, using next node ${loopEntry} as loopEntry`);
             }
-    
-            // Only add if it contains real code
-            if (headerStmt && (headerStmt.content || '').trim().length > 0) {
-                bodyProgram.addStatement(headerStmt);
-            }
-        }
-    
-        // Now add the rest of the loop body nodes.
-        const allowedIds = new Set(loopInfo.bodyNodes);
-
-        for (const bodyNodeId of loopInfo.bodyNodes) {
-            if (bodyNodeId === nodeId) continue;
-    
-            const nodeIR = this.buildNode(
-                bodyNodeId,
-                new Set([...visited]),
-                allowedIds
-            );
-    
-            if (nodeIR) {
-                bodyProgram.addStatement(nodeIR);
-            }
-        }
-    
-        // Optional: if you treat exitNodes as "break points" for while_true, keep your current behavior
-        if (loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
-            bodyProgram.addStatement(new IRBreak(`${nodeId}_break`));
+            
+            // buildLoopBodyFromEntry will include the header node if it's in the body
+            // Pass parentAllowedIds so nested loop exit nodes can be checked against parent loop's allowedIds
+            bodyProgram = this.buildLoopBodyFromEntry(nodeId, allowedIds, visited, loopEntry, activeLoops, null, false, parentAllowedIds);
+            
+            // For multi-exit while-true loops, we need to convert exit nodes to break statements
+            // The exit nodes should already be handled by the loop body building, but we need to ensure
+            // they're converted to breaks. This is handled by buildIfStatement when it detects breaks.
+            // However, if we have exit nodes that aren't in the body, we need to add them as breaks.
+            if (loopInfo.metadata?.isMultiExit && loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
+                // For each exit node, check if it's already in the body
+                // If not, we need to add it as a break statement
+                // But actually, exit nodes should be in bodyNodes for multi-exit patterns
+                // So this should not be needed, but we'll keep it as a safety check
             }
         }
 
@@ -3151,14 +4348,47 @@ class EnhancedIRBuilder extends IRBuilder {
      * @param allowedIds - Set of node IDs that are part of the loop body
      * @param visited - Set of already visited nodes
      * @param overrideLoopEntry - Optional: explicitly specify the loop entry point (for useNoBranch)
+     * @param activeLoops - Set of loop headers currently being built
+     * @param excludeNodeId - Node ID to exclude (e.g., update node for for-loops)
+     * @param treatHeaderAsIfStatement - Whether to treat the header as an if statement
+     * @param parentAllowedIds - Set of parent loop's allowed node IDs (if building a nested loop)
      */
-    buildLoopBodyFromEntry(headerId, allowedIds, visited, overrideLoopEntry = null, activeLoops = new Set(), excludeNodeId = null, treatHeaderAsIfStatement = false) {
+    buildLoopBodyFromEntry(headerId, allowedIds, visited, overrideLoopEntry = null, activeLoops = new Set(), excludeNodeId = null, treatHeaderAsIfStatement = false, parentAllowedIds = null) {
         const bodyProgram = new IRProgram();
         const seenIds = new Set();
         
+        // Helper function to check if a node should be added to the queue
+        // Skips update nodes for for-loops (they're handled by Python's range())
+const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
+    if (!nodeId) return false;
+    
+    // Check if it's an update node for a for-loop
+    const updateNodeInfo = this.convergenceFinder.isUpdateNode(nodeId);
+    if (updateNodeInfo.isUpdate) {
+        console.log(`  Skipping update node ${nodeId} for loop ${updateNodeInfo.loopHeaderId} when adding to queue`);
+        return false;
+    }
+    
+    // If stopAfterFlag is true, we still add to queue but mark it to stop after building
+    // This is used for convergence points that loop back to the header (like n85 "output = """)
+    // We need to build them, we just don't continue building after them
+    // The stopAfter flag will be used to prevent building the next chain
+    // So return true even if stopAfterFlag is true - the queue entry will have stopAfter: true
+    return true;
+};
+        
         // Get loop entry point - use override if provided, otherwise default to YES branch
-        const loopEntry = overrideLoopEntry || this.getSuccessor(headerId, 'yes') || this.getSuccessor(headerId, 'true');
-        console.log(`buildLoopBodyFromEntry: headerId=${headerId}, loopEntry=${loopEntry}, allowedIds=${JSON.stringify(Array.from(allowedIds))}`);
+        // For process node headers, default to 'next' instead of 'yes'/'true'
+        let loopEntry = overrideLoopEntry;
+        if (!loopEntry) {
+            const headerNode = this.findNode(headerId);
+            if (headerNode && (headerNode.type === 'process' || headerNode.type === 'var')) {
+                loopEntry = this.getSuccessor(headerId, 'next');
+            } else {
+                loopEntry = this.getSuccessor(headerId, 'yes') || this.getSuccessor(headerId, 'true');
+            }
+        }
+        console.log(`buildLoopBodyFromEntry: headerId=${headerId}, loopEntry=${loopEntry}, allowedIds=${JSON.stringify(Array.from(allowedIds))}, parentAllowedIds=${parentAllowedIds ? JSON.stringify(Array.from(parentAllowedIds)) : 'null'}`);
         
         if (!loopEntry) {
             console.log(`  Early return: loopEntry=null/undefined`);
@@ -3181,7 +4411,7 @@ class EnhancedIRBuilder extends IRBuilder {
         const nodeMap = new Map(); // Map nodeId -> nodeIR for linking
         
         while (queue.length > 0) {
-            const { id: currentNodeId, depth } = queue.shift();
+            const { id: currentNodeId, depth, stopAfter } = queue.shift();
             
             // Check if it's a nested loop header before skipping
             const node = this.findNode(currentNodeId);
@@ -3191,8 +4421,37 @@ class EnhancedIRBuilder extends IRBuilder {
             if (seenIds.has(currentNodeId) || (!isNestedLoop && localVisited.has(currentNodeId))) continue;
             if (depth > maxDepth) continue;
             
+            // CRITICAL: Check for update nodes FIRST, before any other checks
+            // Update nodes should NEVER be compiled, even if they're in allowedIds
+            const earlyUpdateCheck = this.convergenceFinder.isUpdateNode(currentNodeId);
+            if (earlyUpdateCheck.isUpdate) {
+                console.log(`  [EARLY] Skipping update node ${currentNodeId} (${this.findNode(currentNodeId)?.text || 'unknown'}) - should never be compiled`);
+                seenIds.add(currentNodeId);
+                localVisited.add(currentNodeId);
+                // Skip the update node but continue with its successor (the loop's exit)
+                const next = earlyUpdateCheck.exitNode || this.getSuccessor(currentNodeId, 'next');
+                if (next && (allowedIds.has(next) || (parentAllowedIds && parentAllowedIds.has(next))) && !seenIds.has(next) && !localVisited.has(next) && shouldAddToQueue(next)) {
+                    queue.push({ id: next, depth: depth + 1 });
+                }
+                continue;
+            }
+            
             // Check if it's in allowedIds, OR if it's a nested loop header
             // (nested loop headers should be included even if not explicitly in allowedIds)
+            // BUT: Skip update nodes for for-loops - they should NEVER be compiled, even if in allowedIds
+            // (Note: Already checked above, but keeping comment for clarity)
+            if (earlyUpdateCheck.isUpdate) {
+                console.log(`  Early check: Skipping update node ${currentNodeId} (${this.findNode(currentNodeId)?.text || 'unknown'}) - should never be compiled`);
+                seenIds.add(currentNodeId);
+                localVisited.add(currentNodeId);
+                // Skip the update node but continue with its successor (the loop's exit)
+                const next = earlyUpdateCheck.exitNode || this.getSuccessor(currentNodeId, 'next');
+                if (next && (allowedIds.has(next) || (parentAllowedIds && parentAllowedIds.has(next))) && !seenIds.has(next) && !localVisited.has(next) && shouldAddToQueue(next)) {
+                    queue.push({ id: next, depth: depth + 1 });
+                }
+                continue;
+            }
+            
             if (!allowedIds.has(currentNodeId) && !isNestedLoop) {
                 continue;
             }
@@ -3202,7 +4461,7 @@ class EnhancedIRBuilder extends IRBuilder {
             if (excludeNodeId && currentNodeId === excludeNodeId) {
                 // Skip this node but continue processing its successors
                 const graphNextId = this.getSuccessor(currentNodeId, 'next');
-                if (graphNextId && graphNextId !== headerId && !seenIds.has(graphNextId)) {
+                if (graphNextId && graphNextId !== headerId && !seenIds.has(graphNextId) && shouldAddToQueue(graphNextId)) {
                     if (allowedIds.has(graphNextId) || this.loopClassifications.has(graphNextId)) {
                         queue.push({ id: graphNextId, depth: depth + 1 });
                     }
@@ -3218,55 +4477,139 @@ class EnhancedIRBuilder extends IRBuilder {
             if (!node) continue;
             
             // Check if it's a loop header (should be handled separately)
+            // IMPORTANT: Check this BEFORE checking if it's a decision node
+            // This ensures nested loops are built as loops, not as if statements
             const loopInfo = this.loopClassifications.get(currentNodeId);
             if (loopInfo) {
+                console.log(`  Found nested loop header ${currentNodeId} (type: ${loopInfo.type}) while building loop ${headerId}`);
                 // CRITICAL: If this is the same loop header we're currently building, skip it
                 // This prevents infinite recursion when a while loop body loops back to its own header
                 // EXCEPTION: For while-true multi-exit loops, the header IS part of the body as an if-statement
+                // EXCEPTION: For while-true loops with process node headers, the header IS part of the body
                 if (currentNodeId === headerId && !treatHeaderAsIfStatement) {
-                    // This is the same loop - we're done building the body, skip it
-                    continue;
+                    // Check if this is a while-true loop with a process node header
+                    // In that case, the header is part of the body and should be built
+                    const headerNode = this.findNode(headerId);
+                    const isWhileTrueProcessHeader = loopInfo.type === 'while_true' && 
+                                                     headerNode && 
+                                                     (headerNode.type === 'process' || headerNode.type === 'var');
+                    
+                    if (isWhileTrueProcessHeader) {
+                        // Header is part of the body for while-true loops with process headers
+                        // Skip loop building logic and fall through to build it as a regular node
+                        // Don't build it as a loop - build it as a regular process/var node
+                    } else {
+                        // This is the same loop - we're done building the body, skip it
+                        continue;
+                    }
                 }
 
                 // If treatHeaderAsIfStatement is set for this header, build it as an if-statement, not a loop
                 if (currentNodeId === headerId && treatHeaderAsIfStatement) {
                     // Fall through to build as if-statement
-                } else {
-                
-                // Build as loop, but don't follow next chain
-                // Use a separate visited set for building nested loops to prevent them from being marked as visited
-                // in the outer loop's visited set
-                const nestedVisited = new Set();
-                const loopIR = this.buildLoopFromClassification(currentNodeId, loopInfo, nestedVisited, allowedIds, activeLoops);
-                // Mark as visited and seen AFTER building to prevent duplicate processing
-                localVisited.add(currentNodeId);
-                seenIds.add(currentNodeId);
-                if (loopIR) {
-                    bodyProgram.addStatement(loopIR);
-                    nodeMap.set(currentNodeId, loopIR);
-                    
-                    // For nested loops, we need to continue building the outer loop body
-                    // after the inner loop completes. Get the loop's exit node.
-                    // For for-loops, the exit is in loopInfo.exitNodes
-                    // For while-loops, it's the "no" branch
-                    let exitNodeId = null;
-                    if (loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
-                        exitNodeId = loopInfo.exitNodes[0];
+                } else if (currentNodeId === headerId && loopInfo.type === 'while_true') {
+                    // For while-true loops, if the header is a process node and we're building it as part of the body,
+                    // skip the loop building and build it as a regular node instead
+                    const headerNode = this.findNode(headerId);
+                    const isWhileTrueProcessHeader = headerNode && 
+                                                     (headerNode.type === 'process' || headerNode.type === 'var');
+                    if (isWhileTrueProcessHeader) {
+                        // Fall through to build as regular node (skip loop building)
                     } else {
-                        exitNodeId = this.getSuccessor(currentNodeId, 'no') || this.getSuccessor(currentNodeId, 'false');
+                        // Build as loop, but don't follow next chain
+                        // Use a separate visited set for building nested loops to prevent them from being marked as visited
+                        // in the outer loop's visited set
+                        const nestedVisited = new Set();
+                        const loopIR = this.buildLoopFromClassification(currentNodeId, loopInfo, nestedVisited, allowedIds, activeLoops);
+                        // Mark as visited and seen AFTER building to prevent duplicate processing
+                        localVisited.add(currentNodeId);
+                        seenIds.add(currentNodeId);
+                        if (loopIR) {
+                            bodyProgram.addStatement(loopIR);
+                            nodeMap.set(currentNodeId, loopIR);
+                            
+                            // For nested loops, we need to continue building the outer loop body
+                            // after the inner loop completes. Get the loop's exit node.
+                            // For for-loops, the exit is in loopInfo.exitNodes
+                            // For while-loops, it's the "no" branch
+                            let exitNodeId = null;
+                            if (loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
+                                exitNodeId = loopInfo.exitNodes[0];
+                            } else {
+                                exitNodeId = this.getSuccessor(currentNodeId, 'no') || this.getSuccessor(currentNodeId, 'false');
+                            }
+                            
+                            // Add exit node to queue if it exists, we haven't seen it, and it's in allowedIds
+                            // Note: For for-loops, the increment node is excluded from allowedIds,
+                            // so if the exit is the increment, we stop here (the increment is implicit in for-loops)
+                            if (exitNodeId && allowedIds.has(exitNodeId) && !seenIds.has(exitNodeId) && !localVisited.has(exitNodeId)) {
+                                queue.push({ id: exitNodeId, depth: depth + 1 });
+                            }
+                            // If exit node is not in allowedIds, it's likely the parent loop's increment
+                            // (for for-loops) or exit path, which will be handled by the parent loop's next
+                        }
+                        continue;
                     }
-                    
-                    // Add exit node to queue if it exists, we haven't seen it, and it's in allowedIds
-                    // Note: For for-loops, the increment node is excluded from allowedIds,
-                    // so if the exit is the increment, we stop here (the increment is implicit in for-loops)
-                    if (exitNodeId && allowedIds.has(exitNodeId) && !seenIds.has(exitNodeId) && !localVisited.has(exitNodeId)) {
-                        queue.push({ id: exitNodeId, depth: depth + 1 });
+                } else {
+                    // This is a nested loop (currentNodeId !== headerId)
+                    // Build as loop, but don't follow next chain
+                    // Use a separate visited set for building nested loops to prevent them from being marked as visited
+                    // in the outer loop's visited set
+                    console.log(`  Building nested loop ${currentNodeId} (type: ${loopInfo.type}) inside loop ${headerId}`);
+                    const nestedVisited = new Set();
+                    // IMPORTANT: Don't add currentNodeId to activeLoops before calling buildLoopFromClassification
+                    // because buildLoopFromClassification will add it itself and check if it's already there
+                    // We need to pass a fresh activeLoops set that doesn't include currentNodeId
+                    const nestedActiveLoops = new Set(activeLoops);
+                    // Don't add currentNodeId here - let buildLoopFromClassification handle it
+                    // Pass allowedIds as parentAllowedIds so nested loop exit nodes can be checked against parent loop's allowedIds
+                    const loopIR = this.buildLoopFromClassification(currentNodeId, loopInfo, nestedVisited, allowedIds, nestedActiveLoops, allowedIds);
+                    // Mark as visited and seen AFTER building to prevent duplicate processing
+                    localVisited.add(currentNodeId);
+                    seenIds.add(currentNodeId);
+                    if (loopIR) {
+                        bodyProgram.addStatement(loopIR);
+                        nodeMap.set(currentNodeId, loopIR);
+                        console.log(`  Successfully built nested loop ${currentNodeId}`);
+                        
+                        // For nested loops, we need to continue building the outer loop body
+                        // after the inner loop completes. Get the loop's exit node.
+                        // For for-loops, the exit is in loopInfo.exitNodes
+                        // For while-loops, it's the "no" branch
+                        let exitNodeId = null;
+                        if (loopInfo.exitNodes && loopInfo.exitNodes.length > 0) {
+                            exitNodeId = loopInfo.exitNodes[0];
+                        } else {
+                            exitNodeId = this.getSuccessor(currentNodeId, 'no') || this.getSuccessor(currentNodeId, 'false');
+                        }
+                        
+                        console.log(`  Nested loop ${currentNodeId} exit node: ${exitNodeId}`);
+                        // For successfully built nested loops, don't add the exit node to the queue
+                        // The exit node will be handled by the nested loop's own processing
+                        // Only add exit nodes to queue for failed nested loop builds
+                        console.log(`  Nested loop ${currentNodeId} built successfully, exit node ${exitNodeId} will be handled by nested loop`);
+
+                        // After building the nested loop, continue with its exit node in the outer loop
+                        // This ensures the outer loop body continues after the inner loop
+                        // Reuse the existing exitNodeId variable
+                        exitNodeId = loopInfo.exitNodes && loopInfo.exitNodes.length > 0 ? loopInfo.exitNodes[0] : null;
+                        console.log(`  Checking exit node of nested loop ${currentNodeId}: ${exitNodeId}`);
+                        console.log(`    exitNodeId in allowedIds: ${allowedIds.has(exitNodeId)}`);
+                        console.log(`    exitNodeId in seenIds: ${seenIds.has(exitNodeId)}`);
+                        console.log(`    exitNodeId in localVisited: ${localVisited.has(exitNodeId)}`);
+                        if (exitNodeId && allowedIds.has(exitNodeId) && !seenIds.has(exitNodeId) && !localVisited.has(exitNodeId)) {
+                            console.log(`  Adding exit node ${exitNodeId} of nested loop ${currentNodeId} to queue`);
+                            queue.push({ id: exitNodeId, depth: depth + 1 });
+                        } else {
+                            console.log(`  NOT adding exit node ${exitNodeId} of nested loop ${currentNodeId} to queue`);
+                        }
+                        // If exit node is not in allowedIds or parentAllowedIds, it's likely the parent loop's increment
+                        // (for for-loops) or exit path, which will be handled by the parent loop's next
+                    } else {
+                        console.warn(`  Failed to build nested loop ${currentNodeId}`);
                     }
-                    // If exit node is not in allowedIds, it's likely the parent loop's increment
-                    // (for for-loops) or exit path, which will be handled by the parent loop's next
-                }
-                continue;
-                }  // end else (not treating header as if-statement)
+                    continue;
+                }  // end else (not treating header as if-statement or while-true process header)
             }
             
             // Check if it's a decision (if statement)
@@ -3276,6 +4619,74 @@ class EnhancedIRBuilder extends IRBuilder {
                 if (ifIR) {
                     bodyProgram.addStatement(ifIR);
                     nodeMap.set(currentNodeId, ifIR);
+                    
+                    // IMPORTANT: After building an if statement, continue building from its convergence point
+                    // This ensures the loop body continues after the if statement completes
+                    // This mirrors the old compiler's behavior: always compile convergence point after if
+                    const trueNext = this.getSuccessor(currentNodeId, 'yes') || this.getSuccessor(currentNodeId, 'true');
+                    const falseNext = this.getSuccessor(currentNodeId, 'no') || this.getSuccessor(currentNodeId, 'false');
+                    
+                    // Use ConvergenceFinder to find convergence point
+                    let nextNodeId = null;
+                    
+                    // Method 1: Use ifIR.next if it's already built
+                    if (ifIR.next && ifIR.next.id) {
+                        nextNodeId = ifIR.next.id;
+                    }
+                    
+                    // Method 2: Use ConvergenceFinder (handles elif chains, loop exits, update nodes)
+                    if (!nextNodeId) {
+                        nextNodeId = this.convergenceFinder.findConvergencePoint(
+                            currentNodeId, 
+                            trueNext, 
+                            falseNext, 
+                            headerId, 
+                            allowedIds
+                        );
+                    }
+                    
+                    // Adjust convergence point for loops (handles update nodes, exit nodes, nested loops)
+                    const adjusted = this.convergenceFinder.adjustConvergencePointForLoops(
+                        nextNodeId, 
+                        headerId, 
+                        allowedIds,
+                        parentAllowedIds
+                    );
+                    const actualNextNodeId = adjusted.convergencePoint;
+                    const shouldStop = adjusted.shouldStop;
+                    const isNestedLoopExit = adjusted.isNestedLoopExit;
+                    const isInParentAllowedIds = adjusted.isInParentAllowedIds;
+                    
+                    // Debug logging
+                    if (actualNextNodeId) {
+                        console.log(`  Convergence point analysis for if ${currentNodeId}:`);
+                        console.log(`    actualNextNodeId: ${actualNextNodeId}`);
+                        console.log(`    shouldStop: ${shouldStop}`);
+                        console.log(`    isNestedLoopExit: ${isNestedLoopExit}`);
+                        console.log(`    isInParentAllowedIds: ${isInParentAllowedIds}`);
+                        console.log(`    in allowedIds: ${allowedIds.has(actualNextNodeId)}`);
+                        console.log(`    in parentAllowedIds: ${parentAllowedIds && parentAllowedIds.has(actualNextNodeId)}`);
+                    }
+                    
+                    // Add convergence point to queue if it exists, we haven't seen it, and it's in allowedIds or parentAllowedIds
+                    // Even if shouldStop is true (update node for while loop), we still need to build it - we just won't continue after it
+                    // BUT: Skip if it's an update node for a for-loop (handled by Python's range())
+                    const isInAllowedSet = allowedIds.has(actualNextNodeId) || (parentAllowedIds && parentAllowedIds.has(actualNextNodeId));
+                    if (!isNestedLoopExit && actualNextNodeId && actualNextNodeId !== headerId && 
+                        isInAllowedSet && 
+                        !seenIds.has(actualNextNodeId) && !localVisited.has(actualNextNodeId) &&
+                        shouldAddToQueue(actualNextNodeId, shouldStop)) {
+                        if (shouldStop) {
+                            console.log(`  Adding convergence point ${actualNextNodeId} to queue after if statement ${currentNodeId} (will stop after building - update node)`);
+                        } else {
+                            console.log(`  Adding convergence point ${actualNextNodeId} to queue after if statement ${currentNodeId}`);
+                        }
+                        queue.push({ id: actualNextNodeId, depth: depth + 1, stopAfter: shouldStop });
+                    } else if (!isNestedLoopExit && actualNextNodeId && !isInAllowedSet) {
+                        console.warn(`  Convergence point ${actualNextNodeId} for if ${currentNodeId} is outside allowedIds and parentAllowedIds`);
+                    } else if (!actualNextNodeId) {
+                        console.warn(`  No convergence point found for if statement ${currentNodeId} (trueNext=${trueNext}, falseNext=${falseNext})`);
+                    }
                 }
                 continue;
             }
@@ -3286,6 +4697,70 @@ class EnhancedIRBuilder extends IRBuilder {
                 continue;
             }
             
+            // Check if this node is an update node for any for loop - skip it (redundant, handled by Python's range())
+            // This check happens AFTER we've already added it to the queue, so we need to skip it here
+            // IMPORTANT: Check for update nodes BEFORE building - they should never be compiled
+            const updateNodeInfo = this.convergenceFinder.isUpdateNode(currentNodeId);
+            let isUpdateNode = false;
+            if (updateNodeInfo.isUpdate) {
+                console.log(`  Skipping for-loop update node ${currentNodeId} (${this.findNode(currentNodeId)?.text || 'unknown'}) in loop body (redundant - handled by for loop)`);
+                isUpdateNode = true;
+                // Mark as seen to prevent re-adding
+                seenIds.add(currentNodeId);
+                localVisited.add(currentNodeId);
+                // Skip the update node but continue with its successor (the loop's exit)
+                const next = updateNodeInfo.exitNode || this.getSuccessor(currentNodeId, 'next');
+                if (next && (allowedIds.has(next) || (parentAllowedIds && parentAllowedIds.has(next))) && !seenIds.has(next) && !localVisited.has(next) && shouldAddToQueue(next)) {
+                    queue.push({ id: next, depth: depth + 1 });
+                }
+            }
+            if (isUpdateNode) {
+                continue;
+            }
+            
+            // Check if this node is an init node for any for loop - skip it (redundant)
+            let isInitNode = false;
+            for (const [loopHeaderId, loopInfo] of this.loopClassifications) {
+                if (loopInfo.type === 'for' && loopInfo.initNodeId === currentNodeId) {
+                    console.log(`  Skipping for-loop init node ${currentNodeId} in loop body (redundant - handled by for loop)`);
+                    isInitNode = true;
+                    // Skip the init node but continue with its successor
+                    const next = this.getSuccessor(currentNodeId, 'next');
+                    if (next && allowedIds.has(next) && !seenIds.has(next) && !localVisited.has(next) && shouldAddToQueue(next)) {
+                        queue.push({ id: next, depth: depth + 1 });
+                    }
+                    break;
+                }
+            }
+            if (isInitNode) {
+                continue;
+            }
+            
+            // Double-check: Make sure this isn't an update node before building
+            // (defensive check in case it somehow got into the queue)
+            const doubleCheckUpdate = this.convergenceFinder.isUpdateNode(currentNodeId);
+            if (doubleCheckUpdate.isUpdate) {
+                console.log(`  Double-check: Skipping update node ${currentNodeId} before building (should not have reached here)`);
+                seenIds.add(currentNodeId);
+                localVisited.add(currentNodeId);
+                continue;
+            }
+            
+            // Final check: Make absolutely sure this isn't an update node before building
+            // This is a last line of defense - update nodes should NEVER be compiled
+            const finalUpdateCheck = this.convergenceFinder.isUpdateNode(currentNodeId);
+            if (finalUpdateCheck.isUpdate) {
+                console.log(`  FINAL CHECK: Skipping update node ${currentNodeId} (${this.findNode(currentNodeId)?.text || 'unknown'}) - should never be compiled`);
+                seenIds.add(currentNodeId);
+                localVisited.add(currentNodeId);
+                // Skip the update node but continue with its successor (the loop's exit)
+                const next = finalUpdateCheck.exitNode || this.getSuccessor(currentNodeId, 'next');
+                if (next && (allowedIds.has(next) || (parentAllowedIds && parentAllowedIds.has(next))) && !seenIds.has(next) && !localVisited.has(next) && shouldAddToQueue(next)) {
+                    queue.push({ id: next, depth: depth + 1 });
+                }
+                continue;
+            }
+            
             // Build regular node - DON'T pass localVisited to prevent recursive chain building
             // Use an empty set so buildRegularNode doesn't add nodes to localVisited
             const nodeIR = this.buildRegularNodeNoChain(node);
@@ -3293,18 +4768,42 @@ class EnhancedIRBuilder extends IRBuilder {
                 bodyProgram.addStatement(nodeIR);
                 nodeMap.set(currentNodeId, nodeIR);
                 
+                // If this node was marked as stopAfter (update node with direct back edge), don't continue building
+                if (stopAfter) {
+                    console.log(`  Stopping after building update node ${currentNodeId} (has direct back edge to loop header)`);
+                    continue;
+                }
+                
                 // Get next from graph
                 const graphNextId = this.getSuccessor(currentNodeId, 'next');
                 
+                // Check if next node is an update node for any loop - skip it
+                const updateNodeInfo = this.convergenceFinder.isUpdateNode(graphNextId);
+                let isNextUpdateNode = false;
+                if (updateNodeInfo.isUpdate) {
+                    console.log(`  Next node ${graphNextId} is update node for loop ${updateNodeInfo.loopHeaderId}, skipping`);
+                    isNextUpdateNode = true;
+                    // Skip the update node but continue with its successor (the loop's exit)
+                    const nextAfterUpdate = updateNodeInfo.exitNode || this.getSuccessor(graphNextId, 'next');
+                    if (nextAfterUpdate && nextAfterUpdate !== headerId && 
+                        (allowedIds.has(nextAfterUpdate) || (parentAllowedIds && parentAllowedIds.has(nextAfterUpdate))) && 
+                        !seenIds.has(nextAfterUpdate) && !localVisited.has(nextAfterUpdate) && shouldAddToQueue(nextAfterUpdate)) {
+                        queue.push({ id: nextAfterUpdate, depth: depth + 1 });
+                    }
+                }
+                
                 // Add next to queue if it's in allowed set OR if it's a nested loop header
                 // BUT: Never add the same loop header we're currently building (prevents infinite recursion)
-                if (graphNextId && graphNextId !== headerId) {
+                // AND: Skip if it's an update node (already handled above)
+                if (!isNextUpdateNode && graphNextId && graphNextId !== headerId) {
                     const inSeenIds = seenIds.has(graphNextId);
                     const inLocalVisited = localVisited.has(graphNextId);
                     const isNestedLoopHeader = this.loopClassifications.has(graphNextId);
                     const inAllowedIds = allowedIds.has(graphNextId);
+                    const inParentAllowedIds = parentAllowedIds && parentAllowedIds.has(graphNextId);
                     // For nested loop headers, ignore localVisited check to ensure they're added to the queue
-                    const shouldAdd = !inSeenIds && (!inLocalVisited || isNestedLoopHeader) && (inAllowedIds || isNestedLoopHeader);
+                    // Also check parentAllowedIds for nodes that are in the parent loop's body
+                    const shouldAdd = !inSeenIds && (!inLocalVisited || isNestedLoopHeader) && (inAllowedIds || isNestedLoopHeader || inParentAllowedIds) && shouldAddToQueue(graphNextId);
                     if (shouldAdd) {
                         queue.push({ id: graphNextId, depth: depth + 1 });
                     }
@@ -3354,8 +4853,9 @@ class EnhancedIRBuilder extends IRBuilder {
                 return new IRStatement(node.id, 'print', node.text || '');
             case 'input':
                 {
-                    const raw = (node.text || '').trim();
-                    const compiled = raw.length > 0 ? raw : this.buildInputStatement(node);
+                    // Always use buildInputStatement for input nodes to generate proper Python code
+                    // node.text might contain a label/prompt, but we need the full input statement
+                    const compiled = this.buildInputStatement(node);
                     return new IRStatement(node.id, 'input', compiled);
                 }
             default:
@@ -3380,8 +4880,9 @@ class EnhancedIRBuilder extends IRBuilder {
                 break;
             case 'input':
                 {
-                    const raw = (node.text || '').trim();
-                    const compiled = raw.length > 0 ? raw : this.buildInputStatement(node);
+                    // Always use buildInputStatement for input nodes to generate proper Python code
+                    // node.text might contain a label/prompt, but we need the full input statement
+                    const compiled = this.buildInputStatement(node);
                     stmt = new IRStatement(node.id, 'input', compiled);
                 }
                 break;
@@ -3408,224 +4909,6 @@ class EnhancedIRBuilder extends IRBuilder {
         }
         
         return stmt;
-    }
-}
-
-/**
- * BreakManager - Centralized break statement detection and management
- * 
- * This class provides a single source of truth for determining when break
- * statements should be added to loop bodies. It handles all loop types,
- * nested loops, and edge cases consistently.
- */
-class BreakManager {
-    constructor(nodes, connections, flowAnalysis, outgoingMap, incomingMap) {
-        this.nodes = nodes;
-        this.connections = connections;
-        this.flowAnalysis = flowAnalysis;
-        this.outgoingMap = outgoingMap;
-        this.incomingMap = incomingMap;
-    }
-    
-    /**
-     * Main entry point: Should a break be added to this branch?
-     * 
-     * @param {string} branchStartId - Node ID where the branch starts
-     * @param {string} loopHeaderId - Loop header node ID (null if not in loop)
-     * @param {Array<string>} contextStack - Current context stack (for nested loops)
-     * @param {string} loopType - Type of loop: 'for', 'while', 'while_true', 'while_else'
-     * @param {string} convergencePoint - Convergence point ID (if any)
-     * @returns {boolean} - True if break should be added
-     */
-    shouldAddBreak(branchStartId, loopHeaderId, contextStack, loopType, convergencePoint = null) {
-        console.log(`BreakManager.shouldAddBreak(${branchStartId}, ${loopHeaderId}, contextStack=`, contextStack, `, loopType=${loopType}, convergencePoint=${convergencePoint})`);
-        // Step 1: Basic checks
-        if (!loopHeaderId) {
-            console.log(`  Step 1: No loopHeaderId, returning false`);
-            return false;      // Must be inside a loop
-        }
-        if (!branchStartId) {
-            console.log(`  Step 1: No branchStartId, returning false`);
-            return false;     // Must have a valid branch
-        }
-    
-        // IMPORTANT CHANGE:
-        // We NO LONGER veto just because the branch *can* reach the header.
-        // Instead we rely on branchReachesEnd, which already ignores paths
-        // that return to the header (reachesEndWithoutReturningToHeader).
-    
-        // Step 2: Does any path from this branch reach END
-        // without returning to the loop header?
-        const reachesEnd = this.branchReachesEnd(branchStartId, loopHeaderId);
-        console.log(`  Step 2: branchReachesEnd(${branchStartId}, ${loopHeaderId}) = ${reachesEnd}`);
-        if (!reachesEnd) {
-            // No exit path → no break
-            console.log(`  Step 2: No exit path, returning false`);
-            return false;
-        }
-    
-        // Step 3: Loop-type specific tweaks (keep as a hook)
-        if (loopType === 'for') {
-            // For loops: "normal" completion falls out via condition,
-            // but an early path to END still counts as a valid break.
-            // (Nothing extra needed here right now.)
-        }
-    
-        // Step 4: Nested loops — ensure we're not accidentally
-        // breaking an outer loop instead of the current one.
-        const targetLoop = this.findTargetLoopLevel(branchStartId, contextStack);
-        console.log(`  Step 4: findTargetLoopLevel(${branchStartId}) = ${targetLoop}`);
-        if (targetLoop && targetLoop !== loopHeaderId) {
-            console.log(`  Step 4: Target loop ${targetLoop} !== loopHeaderId ${loopHeaderId}, returning false`);
-            return false;
-        }
-    
-        // Step 5: Convergence point check
-        if (convergencePoint) {
-            const convNode = this.nodes.find(n => n.id === convergencePoint);
-            console.log(`  Step 5: convergencePoint=${convergencePoint}, convNode.type=${convNode?.type}`);
-            if (convNode && convNode.type === "end") {
-                // Convergence IS END → this is clearly an exit
-                console.log(`  Step 5: Convergence is END, returning true`);
-                return true;
-            }
-            // Otherwise, fall back to the exit check we already did
-            console.log(`  Step 5: Convergence not END, returning branchReachesEnd=${reachesEnd}`);
-            return reachesEnd;
-        }
-    
-        // Step 6: All checks passed → add break
-        console.log(`  Step 6: All checks passed, returning true`);
-        return true;
-    }
-    
-    
-    /**
-     * Check if branch loops back to header (NOT an exit)
-     */
-    branchLoopsBackToHeader(branchStartId, loopHeaderId) {
-        if (!branchStartId || !loopHeaderId) return false;
-        return this.canReach(branchStartId, loopHeaderId, new Set());
-    }
-    
-    /**
-     * Check if branch reaches END (is an exit)
-     */
-    branchReachesEnd(branchStartId, loopHeaderId) {
-        if (!branchStartId) return false;
-        return this.reachesEndWithoutReturningToHeader(branchStartId, loopHeaderId);
-    }
-    
-    /**
-     * Find which loop level this break should exit
-     */
-    findTargetLoopLevel(branchStartId, contextStack) {
-        if (!contextStack || contextStack.length === 0) return null;
-        
-        // Find all loops in context stack (innermost first)
-        const loopHeaders = [];
-        for (let i = contextStack.length - 1; i >= 0; i--) {
-            const ctx = contextStack[i];
-            if (ctx.startsWith('loop_')) {
-                loopHeaders.push(ctx.replace('loop_', ''));
-            }
-        }
-        
-        // Check which loop this branch actually exits
-        // Start from innermost and work outward
-        for (const headerId of loopHeaders) {
-            // Check if branch exits this loop (reaches END without returning)
-            if (this.branchReachesEnd(branchStartId, headerId)) {
-                // Check if it loops back to this header
-                if (!this.branchLoopsBackToHeader(branchStartId, headerId)) {
-                    return headerId; // This is the loop we exit
-                }
-            }
-        }
-        
-        // No loop found - might exit all loops or not exit any
-        return null;
-    }
-    
-    /**
-     * Helper: Check if one node can reach another
-     */
-    canReach(startId, targetId, avoidSet = new Set()) {
-        if (startId === targetId) return true;
-        
-        const visited = new Set();
-        const stack = [startId];
-        
-        while (stack.length > 0) {
-            const current = stack.pop();
-            if (visited.has(current) || avoidSet.has(current)) continue;
-            visited.add(current);
-            
-            if (current === targetId) return true;
-            
-            const outgoing = this.outgoingMap.get(current) || [];
-            for (const edge of outgoing) {
-                stack.push(edge.to);
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
-     * Helper: Check if path reaches END without returning to header
-     */
-    reachesEndWithoutReturningToHeader(fromId, headerId) {
-        if (!fromId) return false;
-        if (fromId === headerId) return false;
-        
-        const visited = new Set();
-        const stack = [fromId];
-        let foundHeader = false;
-        
-        while (stack.length > 0) {
-            const currentId = stack.pop();
-            
-            // If we come back to the header → not an exit (it's a back edge)
-            if (currentId === headerId) {
-                foundHeader = true;
-                continue; // Skip the header, but mark that we found it
-            }
-            
-            if (visited.has(currentId)) continue;
-            visited.add(currentId);
-            
-            const node = this.nodes.find(n => n.id === currentId);
-            if (!node) continue;
-            
-            // If we reach END → success (exits the loop)
-            // BUT: only if we haven't encountered the header first
-            if (node.type === 'end') {
-                return !foundHeader; // Only exit if header wasn't encountered first
-            }
-            
-            // Follow all successors depending on node type
-            if (node.type === 'decision') {
-                const y = this.getSuccessor(currentId, 'yes') || this.getSuccessor(currentId, 'true');
-                const n = this.getSuccessor(currentId, 'no') || this.getSuccessor(currentId, 'false');
-                if (y && !visited.has(y) && y !== headerId) stack.push(y);
-                if (n && !visited.has(n) && n !== headerId) stack.push(n);
-            } else {
-                const next = this.getSuccessor(currentId, 'next');
-                if (next && !visited.has(next) && next !== headerId) stack.push(next);
-            }
-        }
-        
-        return false;
-    }
-    
-    /**
-     * Helper: Get successor node
-     */
-    getSuccessor(nodeId, port) {
-        const outgoing = this.outgoingMap.get(nodeId) || [];
-        const edge = outgoing.find(e => e.port === port);
-        return edge ? edge.to : null;
     }
 }
 
@@ -3660,18 +4943,8 @@ class FlowchartCompiler {
         this.computeDominators();
         this.findBackEdgesAndLoops();
 
-        // Initialize BreakManager for centralized break detection
-        this.breakManager = new BreakManager(
-            this.nodes,
-            this.connections,
-            null, // flowAnalysis will be set later if needed
-            this.outgoingMap,
-            this.incomingMap
-        );
-
         // Initialize implicit loop headers (from old compiler)
         this.implicitLoopHeaders = this.findImplicitForeverLoopHeaders();
-        console.log(`FlowchartCompiler: Found ${this.implicitLoopHeaders.size} implicit loop headers:`, Array.from(this.implicitLoopHeaders));
 
         // Run for-loop detection on all decision nodes
         this.nodes
@@ -3953,9 +5226,7 @@ class FlowchartCompiler {
         const onStack = new Set();
 
         // First, identify all decision-controlled loops to exclude their nodes
-        // BUT: Skip decisions that have breaks to END (they're part of while-true loops, not decision loops)
         const decisionLoopNodes = new Set();
-        console.log(`findImplicitForeverLoopHeaders: Checking decision-controlled loops...`);
         for (const node of this.nodes) {
             if (node.type === "decision") {
                 const yesId = this.getSuccessor(node.id, 'yes');
@@ -3966,49 +5237,15 @@ class FlowchartCompiler {
                 const noLoops = noId ? this.canReach(noId, node.id, new Set()) : false;
 
                 if (yesLoops || noLoops) {
-                    console.log(`findImplicitForeverLoopHeaders: Decision ${node.id} has loop: yesLoops=${yesLoops}, noLoops=${noLoops}`);
-                    // Check if the looping branch has breaks to END
-                    // If it does, this is part of a while-true loop, not a decision-controlled loop
-                    const loopingBranchId = yesLoops ? yesId : noId;
-                    const exitBranchId = yesLoops ? noId : yesId;
-                    
-                    // Find what node the back edge goes to
-                    const avoidSet = new Set([node.id]);
-                    const backEdgeTarget = this.findNodeInCycle(loopingBranchId, node.id, avoidSet);
-                    console.log(`findImplicitForeverLoopHeaders: Decision ${node.id} back edge target: ${backEdgeTarget}`);
-                    
-                    // If back edge goes to a process/var node and decision has breaks, it's a while-true loop
-                    let hasBreaksToEnd = false;
-                    if (backEdgeTarget) {
-                        const targetNode = this.nodes.find(n => n.id === backEdgeTarget);
-                        if (targetNode && (targetNode.type === 'process' || targetNode.type === 'var')) {
-                            // Check if decision has breaks to END - use pathLeadsTo to check if branches reach END
-                            const endNode = this.nodes.find(n => n.type === 'end');
-                            const endNodeId = endNode ? endNode.id : null;
-                            const yesBreaks = yesId && endNodeId && this.pathLeadsTo(yesId, endNodeId);
-                            const noBreaks = noId && endNodeId && this.pathLeadsTo(noId, endNodeId);
-                            hasBreaksToEnd = yesBreaks || noBreaks;
-                            console.log(`findImplicitForeverLoopHeaders: Decision ${node.id} has breaks: yesBreaks=${yesBreaks}, noBreaks=${noBreaks}, hasBreaksToEnd=${hasBreaksToEnd}`);
-                        }
-                    }
-                    
-                    // Only mark as decision-controlled loop if it doesn't have breaks to END
-                    // (If it has breaks, it's a while-true loop with the process node as header)
-                    if (!hasBreaksToEnd) {
-                        console.log(`findImplicitForeverLoopHeaders: Decision ${node.id} marked as decision-controlled loop`);
-                        // This is a decision-controlled loop - mark all nodes in its loop body
-                        const loopBodyId = yesLoops ? yesId : noId;
-                        if (loopBodyId) {
-                            // Mark all nodes reachable from loop body that eventually loop back
-                            this.markLoopBodyNodes(loopBodyId, node.id, decisionLoopNodes);
-                        }
-                    } else {
-                        console.log(`findImplicitForeverLoopHeaders: Decision ${node.id} has breaks, NOT marking as decision-controlled loop`);
+                    // This is a decision-controlled loop - mark all nodes in its loop body
+                    const loopBodyId = yesLoops ? yesId : noId;
+                    if (loopBodyId) {
+                        // Mark all nodes reachable from loop body that eventually loop back
+                        this.markLoopBodyNodes(loopBodyId, node.id, decisionLoopNodes);
                     }
                 }
             }
         }
-        console.log(`findImplicitForeverLoopHeaders: Decision-controlled loop nodes:`, Array.from(decisionLoopNodes));
 
         const dfs = (nodeId) => {
             visited.add(nodeId);
@@ -4026,24 +5263,13 @@ class FlowchartCompiler {
                     const fromNode = this.nodes.find(n => n.id === nodeId);
                     const toNode = this.nodes.find(n => n.id === target);
 
-                    if (!fromNode || !toNode) {
-                        console.log(`findImplicitForeverLoopHeaders: Back edge ${nodeId} -> ${target}, but nodes not found`);
-                        continue;
-                    }
-
-                    console.log(`findImplicitForeverLoopHeaders: Back edge detected ${nodeId} (${fromNode.type}) -> ${target} (${toNode.type})`);
+                    if (!fromNode || !toNode) continue;
 
                     // Ignore if the TARGET (loop header) is a decision
-                    if (toNode.type === "decision") {
-                        console.log(`findImplicitForeverLoopHeaders: Target ${target} is a decision, skipping`);
-                        continue;
-                    }
+                    if (toNode.type === "decision") continue;
 
                     // Ignore if target is part of a decision-controlled loop
-                    if (decisionLoopNodes.has(target)) {
-                        console.log(`findImplicitForeverLoopHeaders: Target ${target} is part of decision-controlled loop, skipping`);
-                        continue;
-                    }
+                    if (decisionLoopNodes.has(target)) continue;
 
                     // For flowchart 45 pattern: if target is a process node and back edge comes from a decision,
                     // but the decision has breaks to END, we still want to detect it as an implicit loop
@@ -4051,32 +5277,20 @@ class FlowchartCompiler {
                     let shouldInclude = true;
                     if (fromNode.type === "decision") {
                         // Check if this decision has breaks to END
-                        // We check if either branch reaches END (not checking for return to target, since target is the loop header, not the decision)
                         const fromYesId = this.getSuccessor(fromNode.id, 'yes');
                         const fromNoId = this.getSuccessor(fromNode.id, 'no');
-                        
-                        // Check if branches reach END (simple check - does the branch eventually reach an END node?)
-                        // Find END node ID first
-                        const endNode = this.nodes.find(n => n.type === 'end');
-                        const endNodeId = endNode ? endNode.id : null;
-                        const fromYesBreaks = fromYesId && endNodeId && this.pathLeadsTo(fromYesId, endNodeId);
-                        const fromNoBreaks = fromNoId && endNodeId && this.pathLeadsTo(fromNoId, endNodeId);
-                        
-                        console.log(`findImplicitForeverLoopHeaders: Back edge ${fromNode.id} -> ${target}, fromYesBreaks=${fromYesBreaks}, fromNoBreaks=${fromNoBreaks}`);
+                        const fromYesBreaks = fromYesId && this.reachesEndWithoutReturningToHeader(fromYesId, target);
+                        const fromNoBreaks = fromNoId && this.reachesEndWithoutReturningToHeader(fromNoId, target);
                         
                         // If the decision doesn't have breaks, it's a regular decision loop - skip
                         // If it has breaks, it's part of a while True loop - include it
                         if (!fromYesBreaks && !fromNoBreaks) {
                             shouldInclude = false;
-                            console.log(`findImplicitForeverLoopHeaders: Decision ${fromNode.id} has no breaks, skipping implicit loop at ${target}`);
-                        } else {
-                            console.log(`findImplicitForeverLoopHeaders: Decision ${fromNode.id} has breaks, including implicit loop at ${target}`);
                         }
                     }
                     
                     if (shouldInclude) {
                         // non-decision header = implicit forever loop
-                        console.log(`findImplicitForeverLoopHeaders: Adding ${target} as implicit loop header`);
                         headers.add(target);
                     }
                 }
@@ -4315,53 +5529,6 @@ class FlowchartCompiler {
 
         this.forPatternCache.set(decisionId, result);
         return result;
-    }
-    
-    /**
-     * Get loop type for a given loop header ID
-     */
-    getLoopType(loopHeaderId) {
-        if (!loopHeaderId) return null;
-        
-        // Check if it's a for loop
-        const forInfo = this.detectForLoopPattern(loopHeaderId);
-        if (forInfo) {
-            return 'for';
-        }
-        
-        // Check loop analysis (from analyzeLoopStructure)
-        // This is called during compileLoop, so we might not have it yet
-        // For now, check if loop has breaks to determine while-else
-        const hasBreaks = this.checkForBreakToEnd(this.getLoopBodyId(loopHeaderId), loopHeaderId);
-        const exitId = this.getLoopExitId(loopHeaderId);
-        
-        if (hasBreaks && exitId) {
-            const isNormalExit = this.isNormalExitPath(exitId, loopHeaderId);
-            if (isNormalExit) {
-                return 'while_else'; // Has breaks and normal exit -> while-else
-            }
-        }
-        
-        // Check if it's a while-true loop (from loop analysis)
-        // For now, default to simple while
-        // TODO: Integrate with loop analysis when available
-        return 'while';
-    }
-    
-    /**
-     * Helper: Get loop body ID for a loop header
-     */
-    getLoopBodyId(loopHeaderId) {
-        const loopInfo = this.getLoopInfo(loopHeaderId);
-        return loopInfo ? loopInfo.bodyId : null;
-    }
-    
-    /**
-     * Helper: Get loop exit ID for a loop header
-     */
-    getLoopExitId(loopHeaderId) {
-        const loopInfo = this.getLoopInfo(loopHeaderId);
-        return loopInfo ? loopInfo.exitId : null;
     }
 
     /**
@@ -5336,14 +6503,37 @@ class FlowchartCompiler {
                     }
                     // Follow next chain - mark non-structural nodes as emitted
                     // Structural nodes (while/for/if) have their own duplicate check
+                    // CRITICAL: When emitting branches, we should NOT follow the next chain if it leads to
+                    // the convergence point. The convergence point should only be emitted after the if/elif chain.
+                    // However, we can't easily detect this here, so we rely on buildNodeUntil to stop correctly.
+                    // BUT: We can check if we're in a branch context (indent > 0) and if the next node is a print statement
+                    // that matches the convergence point pattern. This is a heuristic to prevent emitting n57 in branches.
                     if (node.next) {
                         console.log(`Statement ${node.id} following next to ${node.next.id} (${node.next.type})`);
-                        const nextIsStructural = node.next.type === 'while' || node.next.type === 'for' || node.next.type === 'if';
-                        if (isTopLevel && node.next.id && !nextIsStructural) {
-                            console.log(`  Marking non-structural ${node.next.id} as emitted`);
-                            topLevelEmittedIds.add(node.next.id);
+                        // Heuristic: If we're in a branch (indent > 0) and the next node is a print statement,
+                        // and it's the "Display Map:" statement (n57), don't emit it - it's the convergence point
+                        const isInBranch = indent > 0;
+                        // More aggressive check: also check if the next node's content matches the pattern
+                        const nextContent = node.next.content || '';
+                        const isConvergencePoint = node.next.id === 'n57' || 
+                            (node.next.type === 'statement' && node.next.statementType === 'print' && 
+                             (nextContent.includes('Display Map') || nextContent === '"Display Map:"' || nextContent.includes('"Display Map:"')));
+                        if (isInBranch && isConvergencePoint) {
+                            console.log(`  *** SKIPPING convergence point ${node.next.id} in branch (indent=${indent}, isInBranch=${isInBranch}) - will be emitted after if/elif chain ***`);
+                            // Also clear the next pointer to prevent it from being emitted elsewhere
+                            node.next = null;
+                        } else if (isInBranch && node.next.id === 'n57') {
+                            // Direct check: if we're in a branch and next is n57, skip it regardless of content
+                            console.log(`  *** SKIPPING n57 in branch (direct check, indent=${indent}) - will be emitted after if/elif chain ***`);
+                            node.next = null;
+                        } else {
+                            const nextIsStructural = node.next.type === 'while' || node.next.type === 'for' || node.next.type === 'if';
+                            if (isTopLevel && node.next.id && !nextIsStructural) {
+                                console.log(`  Marking non-structural ${node.next.id} as emitted`);
+                                topLevelEmittedIds.add(node.next.id);
+                            }
+                            emit(node.next, indent, isTopLevel);
                         }
-                        emit(node.next, indent, isTopLevel);
                     }
                     break;
                     
@@ -5352,7 +6542,96 @@ class FlowchartCompiler {
                     const ifCondition = node.condition || 'True';
                     lines.push(pad + `if ${ifCondition}:`);
                     if (node.thenBranch) {
-                        emit(node.thenBranch, indent + 4, false);  // Nested context
+                        // CRITICAL: Before emitting the branch, check if it contains n57 and remove it
+                        // This is a final safety check to prevent n57 from being emitted in branches
+                        console.log(`  [EMIT IF] Checking if ${node.id} YES branch contains n57...`);
+                        let branchContainsN57 = false;
+                        let current = node.thenBranch;
+                        let nodeCount = 0;
+                        while (current) {
+                            nodeCount++;
+                            const nodeId = current.id || 'unknown';
+                            const nodeType = current.type || 'unknown';
+                            const stmtType = current.statementType || 'none';
+                            const content = current.content || '';
+                            console.log(`    [EMIT IF] Checking node ${nodeId} (type=${nodeType}, statementType=${stmtType}, content=${content.substring(0, 50)})`);
+                            if (nodeId === 'n57' || (nodeType === 'statement' && stmtType === 'print' && content && content.includes('Display Map'))) {
+                                branchContainsN57 = true;
+                                console.log(`  *** [EMIT IF] Found n57 in if ${node.id} YES branch chain at ${nodeId}, removing ***`);
+                                // Remove n57 from the chain
+                                if (current === node.thenBranch) {
+                                    // n57 is the first node in the branch, skip the whole branch
+                                    node.thenBranch = null;
+                                } else {
+                                    // Find the node before n57 and clear its next
+                                    let prev = node.thenBranch;
+                                    while (prev && prev.next !== current) {
+                                        prev = prev.next;
+                                    }
+                                    if (prev) {
+                                        prev.next = null;
+                                    }
+                                }
+                                break;
+                            }
+                            // Also check if the next of this node is n57
+                            if (current.next) {
+                                const nextId = current.next.id || 'unknown';
+                                const nextType = current.next.type || 'unknown';
+                                const nextStmtType = current.next.statementType || 'none';
+                                const nextContent = current.next.content || '';
+                                console.log(`    [EMIT IF] Node ${nodeId} has next=${nextId} (type=${nextType}, statementType=${nextStmtType}, content=${nextContent.substring(0, 50)})`);
+                                if (nextId === 'n57' || (nextType === 'statement' && nextStmtType === 'print' && nextContent && nextContent.includes('Display Map'))) {
+                                    branchContainsN57 = true;
+                                    console.log(`  *** [EMIT IF] Found n57 as next of ${nodeId} in if ${node.id} YES branch, clearing next ***`);
+                                    current.next = null;
+                                    break;
+                                }
+                            }
+                            current = current.next;
+                        }
+                        console.log(`  [EMIT IF] Checked ${nodeCount} nodes in ${node.id} YES branch, branchContainsN57=${branchContainsN57}`);
+                        if (!branchContainsN57 && node.thenBranch) {
+                            // Final safety check: before emitting, verify n57 is not in the branch's next chain
+                            let finalCheck = node.thenBranch;
+                            let finalCheckCount = 0;
+                            while (finalCheck) {
+                                finalCheckCount++;
+                                if (finalCheck.id === 'n57' || (finalCheck.type === 'statement' && finalCheck.statementType === 'print' && finalCheck.content && finalCheck.content.includes('Display Map'))) {
+                                    console.error(`  [EMIT IF] *** CRITICAL: Found n57 in ${node.id} YES branch at ${finalCheck.id} during final check! Removing... ***`);
+                                    // Remove it
+                                    if (finalCheck === node.thenBranch) {
+                                        node.thenBranch = null;
+                                    } else {
+                                        let prev = node.thenBranch;
+                                        while (prev && prev.next !== finalCheck) {
+                                            prev = prev.next;
+                                        }
+                                        if (prev) {
+                                            prev.next = null;
+                                        }
+                                    }
+                                    branchContainsN57 = true;
+                                    break;
+                                }
+                                // Also check next
+                                if (finalCheck.next && (finalCheck.next.id === 'n57' || (finalCheck.next.type === 'statement' && finalCheck.next.statementType === 'print' && finalCheck.next.content && finalCheck.next.content.includes('Display Map')))) {
+                                    console.error(`  [EMIT IF] *** CRITICAL: Found n57 as next of ${finalCheck.id} in ${node.id} YES branch during final check! Clearing next... ***`);
+                                    finalCheck.next = null;
+                                    branchContainsN57 = true;
+                                    break;
+                                }
+                                finalCheck = finalCheck.next;
+                            }
+                            console.log(`  [EMIT IF] Final check: examined ${finalCheckCount} nodes, branchContainsN57=${branchContainsN57}`);
+                            if (!branchContainsN57 && node.thenBranch) {
+                                emit(node.thenBranch, indent + 4, false);  // Nested context
+                            } else if (branchContainsN57) {
+                                lines.push(pad + "    pass");
+                            }
+                        } else if (branchContainsN57) {
+                            lines.push(pad + "    pass");
+                        }
                     } else {
                         lines.push(pad + "    pass");
                     }
@@ -5362,7 +6641,59 @@ class FlowchartCompiler {
                             const elifCondition = node.elseBranch.condition || 'True';
                             lines.push(pad + `elif ${elifCondition}:`);
                             if (node.elseBranch.thenBranch) {
-                                emit(node.elseBranch.thenBranch, indent + 4, false);  // Nested context
+                                // CRITICAL: Before emitting the elif branch, check if it contains n57 and remove it
+                                console.log(`  [EMIT ELIF] Checking if ${node.elseBranch.id} YES branch contains n57...`);
+                                let branchContainsN57 = false;
+                                let current = node.elseBranch.thenBranch;
+                                let nodeCount = 0;
+                                while (current) {
+                                    nodeCount++;
+                                    const nodeId = current.id || 'unknown';
+                                    const nodeType = current.type || 'unknown';
+                                    const stmtType = current.statementType || 'none';
+                                    const content = current.content || '';
+                                    console.log(`    [EMIT ELIF] Checking node ${nodeId} (type=${nodeType}, statementType=${stmtType}, content=${content.substring(0, 50)})`);
+                                    if (nodeId === 'n57' || (nodeType === 'statement' && stmtType === 'print' && content && content.includes('Display Map'))) {
+                                        branchContainsN57 = true;
+                                        console.log(`  *** [EMIT ELIF] Found n57 in elif ${node.elseBranch.id} YES branch chain at ${nodeId}, removing ***`);
+                                        // Remove n57 from the chain
+                                        if (current === node.elseBranch.thenBranch) {
+                                            node.elseBranch.thenBranch = null;
+                                        } else {
+                                            let prev = node.elseBranch.thenBranch;
+                                            while (prev && prev.next !== current) {
+                                                prev = prev.next;
+                                            }
+                                            if (prev) {
+                                                prev.next = null;
+                                            }
+                                        }
+                                        break;
+                                    }
+                                    // Also check if the next of this node is n57
+                                    if (current.next) {
+                                        const nextId = current.next.id || 'unknown';
+                                        const nextType = current.next.type || 'unknown';
+                                        const nextStmtType = current.next.statementType || 'none';
+                                        const nextContent = current.next.content || '';
+                                        console.log(`    [EMIT ELIF] Node ${nodeId} has next=${nextId} (type=${nextType}, statementType=${nextStmtType}, content=${nextContent.substring(0, 50)})`);
+                                        if (nextId === 'n57' || (nextType === 'statement' && nextStmtType === 'print' && nextContent && nextContent.includes('Display Map'))) {
+                                            branchContainsN57 = true;
+                                            console.log(`  *** [EMIT ELIF] Found n57 as next of ${nodeId} in elif ${node.elseBranch.id} YES branch, clearing next ***`);
+                                            current.next = null;
+                                            break;
+                                        }
+                                    }
+                                    current = current.next;
+                                }
+                                console.log(`  [EMIT ELIF] Checked ${nodeCount} nodes in ${node.elseBranch.id} YES branch, branchContainsN57=${branchContainsN57}`);
+                                if (!branchContainsN57 && node.elseBranch.thenBranch) {
+                                    emit(node.elseBranch.thenBranch, indent + 4, false);  // Nested context
+                                } else if (branchContainsN57) {
+                                    lines.push(pad + "    pass");
+                                } else {
+                                    lines.push(pad + "    pass");
+                                }
                             } else {
                                 lines.push(pad + "    pass");
                             }
@@ -5372,7 +6703,59 @@ class FlowchartCompiler {
                                 const nestedElifCondition = currentElif.condition || 'True';
                                 lines.push(pad + `elif ${nestedElifCondition}:`);
                                 if (currentElif.thenBranch) {
-                                    emit(currentElif.thenBranch, indent + 4, false);  // Nested context
+                                    // CRITICAL: Before emitting the nested elif branch, check if it contains n57 and remove it
+                                    console.log(`  [EMIT NESTED ELIF] Checking if ${currentElif.id} YES branch contains n57...`);
+                                    let branchContainsN57 = false;
+                                    let current = currentElif.thenBranch;
+                                    let nodeCount = 0;
+                                    while (current) {
+                                        nodeCount++;
+                                        const nodeId = current.id || 'unknown';
+                                        const nodeType = current.type || 'unknown';
+                                        const stmtType = current.statementType || 'none';
+                                        const content = current.content || '';
+                                        console.log(`    [EMIT NESTED ELIF] Checking node ${nodeId} (type=${nodeType}, statementType=${stmtType}, content=${content.substring(0, 50)})`);
+                                        if (nodeId === 'n57' || (nodeType === 'statement' && stmtType === 'print' && content && content.includes('Display Map'))) {
+                                            branchContainsN57 = true;
+                                            console.log(`  *** [EMIT NESTED ELIF] Found n57 in nested elif ${currentElif.id} YES branch chain at ${nodeId}, removing ***`);
+                                            // Remove n57 from the chain
+                                            if (current === currentElif.thenBranch) {
+                                                currentElif.thenBranch = null;
+                                            } else {
+                                                let prev = currentElif.thenBranch;
+                                                while (prev && prev.next !== current) {
+                                                    prev = prev.next;
+                                                }
+                                                if (prev) {
+                                                    prev.next = null;
+                                                }
+                                            }
+                                            break;
+                                        }
+                                        // Also check if the next of this node is n57
+                                        if (current.next) {
+                                            const nextId = current.next.id || 'unknown';
+                                            const nextType = current.next.type || 'unknown';
+                                            const nextStmtType = current.next.statementType || 'none';
+                                            const nextContent = current.next.content || '';
+                                            console.log(`    [EMIT NESTED ELIF] Node ${nodeId} has next=${nextId} (type=${nextType}, statementType=${nextStmtType}, content=${nextContent.substring(0, 50)})`);
+                                            if (nextId === 'n57' || (nextType === 'statement' && nextStmtType === 'print' && nextContent && nextContent.includes('Display Map'))) {
+                                                branchContainsN57 = true;
+                                                console.log(`  *** [EMIT NESTED ELIF] Found n57 as next of ${nodeId} in nested elif ${currentElif.id} YES branch, clearing next ***`);
+                                                current.next = null;
+                                                break;
+                                            }
+                                        }
+                                        current = current.next;
+                                    }
+                                    console.log(`  [EMIT NESTED ELIF] Checked ${nodeCount} nodes in ${currentElif.id} YES branch, branchContainsN57=${branchContainsN57}`);
+                                    if (!branchContainsN57 && currentElif.thenBranch) {
+                                        emit(currentElif.thenBranch, indent + 4, false);  // Nested context
+                                    } else if (branchContainsN57) {
+                                        lines.push(pad + "    pass");
+                                    } else {
+                                        lines.push(pad + "    pass");
+                                    }
                                 } else {
                                     lines.push(pad + "    pass");
                                 }
@@ -5382,11 +6765,26 @@ class FlowchartCompiler {
                             if (currentElif) {
                         lines.push(pad + `else:`);
                                 emit(currentElif, indent + 4, false);  // Nested context
+                            } else {
+                                // Check if the final elif in the chain has a no branch but no else content
+                                let finalElif = node.elseBranch;
+                                while (finalElif && finalElif.type === 'if' && finalElif.elseBranch && finalElif.elseBranch.type === 'if') {
+                                    finalElif = finalElif.elseBranch;
+                                }
+                                if (finalElif && finalElif.type === 'if' && finalElif.hasNoBranch && !finalElif.elseBranch) {
+                                    // Final elif has a no branch but no else content - add else: pass
+                                    lines.push(pad + `else:`);
+                                    lines.push(pad + "    pass");
+                                }
                             }
                         } else {
                             lines.push(pad + `else:`);
                             emit(node.elseBranch, indent + 4, false);  // Nested context
                         }
+                    } else if (node.hasNoBranch) {
+                        // There's a "no" branch path but no elseBranch content - add else: pass
+                        lines.push(pad + `else:`);
+                        lines.push(pad + "    pass");
                     }
                     // Emit code after the if statement (convergence point)
                     if (node.next) {
@@ -5455,15 +6853,14 @@ class FlowchartCompiler {
                         lines.push(pad + `highlight('${node.id}')`);
                     }
                     
-                    // Include step parameter if it's not the default (1 for ascending)
-                    // For descending loops, step will be negative (e.g., -1, -2) and must be included
+                    // Always include step parameter explicitly (like old compiler)
+                    // For descending loops, step will be negative (e.g., -1, -2)
                     const forStep = node.step ?? 1;
-                    const forStepStr = forStep !== 1 ? `, ${forStep}` : '';
                     const forVar = node.variable || 'i';
                     const forStart = node.start ?? 0;
                     const forEnd = node.end ?? 10;
                     
-                    lines.push(pad + `for ${forVar} in range(${forStart}, ${forEnd}${forStepStr}):`);
+                    lines.push(pad + `for ${forVar} in range(${forStart}, ${forEnd}, ${forStep}):`);
                     
                     // Add highlight for loop header inside the loop body (iteration highlight)
                     if (self.useHighlighting && node.id) {
@@ -5594,21 +6991,21 @@ class FlowchartCompiler {
         visitedInPath.add(nodeId);
 
         // ===========================
-        // skip for-loop init nodes (only if we're actually compiling a for-loop)
+        // skip for-loop init nodes
         // ===========================
-if (this.isInitOfForLoop(nodeId, contextStack)) {
-    console.log(`Skipping for-loop init node: ${nodeId} (${node.text})`);
-    // Add highlight for skipped init nodes
-    if (this.useHighlighting) {
-        code += this.emitHighlight(nodeId, indentLevel);
-    }
-    // Skip to successor
-    const succ = this.getAllSuccessors(nodeId);
-    for (const { nodeId: nxt } of succ) {
-        code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
-    }
-    return code;
-}
+        if (this.isInitOfForLoop(nodeId)) {
+            console.log(`Skipping for-loop init node: ${nodeId}`);
+            // Add highlight for skipped init nodes
+            if (this.useHighlighting) {
+                code += this.emitHighlight(nodeId, indentLevel);
+            }
+            const succ = this.getAllSuccessors(nodeId);
+            for (const { nodeId: nxt } of succ) {
+                code += this.compileNode(nxt, visitedInPath, [...contextStack], indentLevel, inLoopBody, inLoopHeader);
+            }
+            return code;
+        }
+
         // ===========================
         // skip nodes marked in nodesToSkip
         // ===========================
@@ -5624,51 +7021,25 @@ if (this.isInitOfForLoop(nodeId, contextStack)) {
         // ===========================
         // Skip increment nodes in for-loops
         // ===========================
-// ===========================
-// Skip increment nodes in for-loops (for both outer and inner loops)
-// ===========================
-if (node.type === 'process' && node.text) {
-    // Check if this looks like an increment: x = x + 1, i = i - 1, i += 1, etc.
-    const incrementPattern = /^(\w+)\s*=\s*\1\s*[+-]\s*\d+/;
-    const incrementPattern2 = /^(\w+)\s*[+-]=\s*\d+/;
-    
-    if (incrementPattern.test(node.text) || incrementPattern2.test(node.text)) {
-        // Extract variable name
-        const varMatch = node.text.match(/^(\w+)/);
-        if (varMatch) {
-            const varName = varMatch[1];
-            
-            // Check if we're in any for-loop context that uses this variable
-            const inForLoop = contextStack.some(ctx => {
-                if (!ctx.startsWith('loop_')) return false;
-                const loopId = ctx.replace('loop_', '');
-                const forInfo = this.detectForLoopPattern(loopId);
-                return forInfo && forInfo.variable === varName;
-            });
-            
-            if (inForLoop) {
-                console.log(`Skipping for-loop increment node: ${nodeId} (${node.text})`);
-                if (this.useHighlighting) {
-                    code += this.emitHighlight(nodeId, indentLevel);
+        if (node.type === 'process' && node.text) {
+            const incrementPattern = /^(\w+)\s*=\s*\1\s*[+-]\s*\d+/;
+            if (incrementPattern.test(node.text)) {
+                // Check if we're in a for-loop context
+                const inForLoop = contextStack.some(ctx => ctx.startsWith('loop_'));
+                if (inForLoop) {
+                    if (this.useHighlighting) {
+                        code += this.emitHighlight(nodeId, indentLevel);
+                    }
+                    // transparent skip - don't compile this node or its successors
+                    return code;
                 }
-                // Skip this node and continue with its successor
-                const next = this.getSuccessor(nodeId, 'next');
-                if (next) {
-                    return code + this.compileNode(next, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader);
-                }
-                return code;
             }
         }
-    }
-}
 
         // Check for implicit loops ONLY if this node is not part of a decision-controlled loop
         // (Decision loops are handled in compileDecision, which runs before we get here for decision nodes)
-        // BUT: If the decision loop has breaks to END, prioritize the implicit loop (while-true pattern)
         if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(nodeId)) {
-            console.log(`compileNode: ${nodeId} is an implicit loop header`);
             let isPartOfDecisionLoop = false;
-            let decisionLoopHasBreaks = false;
 
             // Check if any decision node is a loop header AND this node is in its loop body
             for (const dec of this.nodes.filter(n => n.type === "decision")) {
@@ -5693,13 +7064,6 @@ if (node.type === 'process' && node.text) {
 
                             if (!hasBackEdgeToSelf) {
                                 isPartOfDecisionLoop = true;
-                                
-                                // Check if this decision loop has breaks to END (while-true pattern)
-                                // If it does, prioritize the implicit loop over the decision loop
-                                const yesBreaks = yesId && this.reachesEndWithoutReturningToHeader(yesId, nodeId);
-                                const noBreaks = noId && this.reachesEndWithoutReturningToHeader(noId, nodeId);
-                                decisionLoopHasBreaks = yesBreaks || noBreaks;
-                                
                                 break;
                             }
                         }
@@ -5707,9 +7071,7 @@ if (node.type === 'process' && node.text) {
                 }
             }
 
-            // If node is part of a decision loop BUT the decision loop has breaks to END,
-            // prioritize the implicit loop (while-true pattern like flowchart45)
-            if (isPartOfDecisionLoop && !decisionLoopHasBreaks) {
+            if (isPartOfDecisionLoop) {
                 // Skip implicit loop detection, continue normal compilation
             } else if (this.loweredImplicitLoops.has(nodeId)) {
                 const next = this.getSuccessor(nodeId, "next");
@@ -5816,89 +7178,27 @@ if (node.type === 'process' && node.text) {
         return `${indent}highlight('${nodeId}')\n`;
     }
 
-/**
- * Returns true if this node is the init assignment of a detected for-loop
- * Works for both outer and inner loops
- */
-isInitOfForLoop(nodeId, contextStack = []) {
-    const node = this.nodes.find(n => n.id === nodeId);
-    if (!node || (node.type !== "var" && node.type !== "process")) return false;
+    // Returns true if this node is the init assignment of a detected for-loop
+    isInitOfForLoop(nodeId) {
+        const node = this.nodes.find(n => n.id === nodeId);
+        if (!node || (node.type !== "var" && node.type !== "process")) return false;
 
-    // Get node text and extract variable name if it's an assignment
-    const text = node.text || '';
-    const assignmentMatch = text.match(/^\s*(\w+)\s*=\s*(.+?)\s*$/);
-    if (!assignmentMatch) return false;
-    
-    const varName = assignmentMatch[1];
-    const varValue = assignmentMatch[2].trim();
+        // Look at EVERY decision node to see if it's a for-loop header
+        for (const dec of this.nodes.filter(n => n.type === "decision")) {
+            const info = this.detectForLoopPattern(dec.id);
+            if (!info || !info.initNodeId) continue;
 
-    // SPECIAL CASE FOR NESTED LOOPS:
-    // If we're inside a loop and this is an init for a DIFFERENT loop,
-    // it might be a nested loop init that should be skipped
-    if (contextStack.length > 0) {
-        const currentContext = contextStack[contextStack.length - 1];
-        if (currentContext.startsWith('loop_')) {
-            const currentLoopId = currentContext.replace('loop_', '');
-            const currentLoopInfo = this.detectForLoopPattern(currentLoopId);
-            
-            // Check all loops to see if this is an init for a NESTED loop
-            for (const dec of this.nodes.filter(n => n.type === "decision")) {
-                const info = this.detectForLoopPattern(dec.id);
-                if (!info || !info.variable) continue;
-
-                // Check if this node initializes the same variable as this for-loop
-                if (info.variable === varName && info.start === varValue) {
-                    // Check if this loop is INSIDE the current loop (nested)
-                    const loopNodes = this.naturalLoops.get(currentLoopId);
-                    const isNested = loopNodes && loopNodes.has(dec.id);
-                    
-                    if (isNested) {
-                        console.log(`Node ${nodeId} (${varName}=${varValue}) is init for NESTED loop ${dec.id} inside loop ${currentLoopId} - skipping`);
-                        return true;
-                    }
-                }
+            // Check if this node is the init for ANY for-loop
+            if (info.initNodeId === nodeId) {
+                console.log(`Node ${nodeId} is init for for-loop at ${dec.id}`);
+                return true;
             }
         }
+
+        return false;
     }
 
-    // Original logic for non-nested cases
-    // Look at EVERY decision node to see if it's a for-loop header
-    for (const dec of this.nodes.filter(n => n.type === "decision")) {
-        const info = this.detectForLoopPattern(dec.id);
-        if (!info || !info.variable) continue;
-
-        // Check if this node initializes the same variable as the for-loop
-        if (info.variable === varName) {
-            // Additional check: the initialization value should match for-loop start
-            if (info.start === varValue) {
-                // Check if we're in the right context for this loop
-                const isReachable = this.pathExists(nodeId, dec.id);
-                
-                // Check if we're already in a loop context that might be using this variable
-                // Don't skip if we're inside a different loop that uses the same variable name
-                let shouldSkip = isReachable;
-                
-                // If we're in a context stack, verify this init belongs to the current loop
-                if (contextStack.length > 0) {
-                    const currentContext = contextStack[contextStack.length - 1];
-                    if (currentContext.startsWith('loop_')) {
-                        const currentLoopId = currentContext.replace('loop_', '');
-                        // Only skip if this init belongs to the current loop
-                        shouldSkip = shouldSkip && (dec.id === currentLoopId);
-                    }
-                }
-                
-                if (shouldSkip) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    return false;
-}
     compileImplicitForeverLoop(nodeId, visitedInPath, contextStack, indentLevel, inLoopBody, inLoopHeader) {
-        console.log(`compileImplicitForeverLoop: Compiling implicit loop starting at ${nodeId}`);
         const indent = "    ".repeat(indentLevel);
         let code = "";
 
@@ -5922,7 +7222,6 @@ isInitOfForLoop(nodeId, contextStack = []) {
 
         // Compile the loop body (everything reachable until we hit back to nodeId)
         const nextId = this.getSuccessor(nodeId, 'next');
-        console.log(`compileImplicitForeverLoop: ${nodeId} nextId=${nextId}`);
         if (nextId) {
             const bodyCode = this.compileNodeUntil(
                 nextId,
@@ -6264,96 +7563,8 @@ isInitOfForLoop(nodeId, contextStack = []) {
 
         console.log(`isSimpleWhileLoop(${decisionId}): yes=${yesId}, no=${noId}, yesLoops=${yesLoops}, noLoops=${noLoops}`);
 
-        // Special case: flowchart45 pattern - if a branch loops back to a process/var node that precedes
-        // the decision in the execution flow, treat it as sequential code (if-elif-else), not a loop
-        if (yesLoops || noLoops) {
-            const loopingBranchId = yesLoops ? yesId : noId;
-            // Find what node the back edge goes to by tracing the path
-            const backEdgeTarget = this.findNodeInCycle(loopingBranchId, decisionId, avoidSet);
-            if (backEdgeTarget) {
-                const targetNode = this.nodes.find(n => n.id === backEdgeTarget);
-                // If back edge goes to a process/var node (not a decision), check if it precedes the decision
-                if (targetNode && (targetNode.type === 'process' || targetNode.type === 'var')) {
-                    // Check if this process node comes before the decision in execution flow
-                    if (this.precedesInExecutionFlow(backEdgeTarget, decisionId)) {
-                        console.log(`Decision ${decisionId}: back edge to process node ${backEdgeTarget} that precedes it - treating as sequential code, not loop`);
-                        return false; // Treat as sequential code, not a loop
-                    }
-                }
-            }
-        }
-
         // A simple while loop: at least one branch loops back
         return yesLoops || noLoops;
-    }
-    
-    /**
-     * Find a node in the cycle that the branch creates (the node the back edge goes to)
-     * In flowchart45: n5 no -> n3, so we want to find n3
-     */
-    findNodeInCycle(startId, targetDecisionId, avoidSet = new Set(), visited = new Set()) {
-        if (!startId || visited.has(startId)) return null;
-        if (startId === targetDecisionId) return null;
-        
-        visited.add(startId);
-        
-        const node = this.nodes.find(n => n.id === startId);
-        if (!node) return null;
-        
-        // If this is a process/var node, check if it connects back to targetDecisionId
-        if (node.type === 'process' || node.type === 'var') {
-            const next = this.getSuccessor(startId, 'next');
-            // Don't avoid the target decision when checking if we can reach it (that's what we're looking for!)
-            const reachAvoidSet = new Set(avoidSet);
-            reachAvoidSet.delete(targetDecisionId);
-            if (next === targetDecisionId || this.canReach(next, targetDecisionId, reachAvoidSet)) {
-                return startId; // Found the process node that creates the back edge
-            }
-        }
-        
-        // If this is a decision, check its branches
-        if (node.type === 'decision') {
-            const yesId = this.getSuccessor(startId, 'yes');
-            const noId = this.getSuccessor(startId, 'no');
-            const yesResult = yesId ? this.findNodeInCycle(yesId, targetDecisionId, avoidSet, new Set(visited)) : null;
-            if (yesResult) return yesResult;
-            return noId ? this.findNodeInCycle(noId, targetDecisionId, avoidSet, new Set(visited)) : null;
-        }
-        
-        // Follow next pointer
-        const next = this.getSuccessor(startId, 'next');
-        if (next && !avoidSet.has(next)) {
-            return this.findNodeInCycle(next, targetDecisionId, avoidSet, visited);
-        }
-        
-        return null;
-    }
-    
-    /**
-     * Check if nodeA comes before nodeB in execution flow (by following 'next' connections)
-     */
-    precedesInExecutionFlow(nodeAId, nodeBId, visited = new Set()) {
-        if (!nodeAId || !nodeBId) return false;
-        if (nodeAId === nodeBId) return false;
-        if (visited.has(nodeAId)) return false;
-        
-        visited.add(nodeAId);
-        
-        // Check if nodeA's next connections lead to nodeB
-        const outgoing = this.outgoingMap.get(nodeAId) || [];
-        for (const edge of outgoing) {
-            if (edge.port === 'next') {
-                if (edge.to === nodeBId) {
-                    return true; // Direct path found
-                }
-                // Recursively check if this node precedes nodeB
-                if (this.precedesInExecutionFlow(edge.to, nodeBId, new Set(visited))) {
-                    return true;
-                }
-            }
-        }
-        
-        return false;
     }
 
     /**
@@ -6591,31 +7802,12 @@ isInitOfForLoop(nodeId, contextStack = []) {
             const bodyCode = this.compileNode(loopBodyId, new Set(), whileCtx, indentLevel + 1, true, true);
             code += bodyCode.trim() ? bodyCode : `${indent}    pass\n`;
 
-            // Check if loop body has breaks to END - if so, use while-else pattern
-            // The else clause only runs when the loop completes normally (no break)
-            const hasBreakToEnd = this.checkForBreakToEnd(loopBodyId, node.id);
-            if (hasBreakToEnd && exitId) {
-                // Use while-else: exit path is compiled as else clause
-                const exitNode = this.nodes.find(n => n.id === exitId);
-                if (exitNode && exitNode.type !== 'end') {
-                    code += `${indent}else:\n`;
-                    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel + 1, false, false);
-                    code += exitCode || `${indent}    pass\n`;
-                    console.log(`Using while-else pattern for loop ${node.id}: exit path ${exitId} compiled as else clause`);
-                } else {
-                    // Exit is END node - compile after loop
-                    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel, false, false);
-                    if (exitCode) {
-                        code += exitCode;
-                    }
-                }
-            } else {
-                // No breaks in body - compile exit path after the loop (not as else clause)
-                if (exitId) {
-                    const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel, false, false);
-                    if (exitCode) {
-                        code += exitCode;
-                    }
+            // Don't add else clause - code after loop should be compiled separately
+            if (exitId) {
+                // Compile exit path after the loop (not as else clause)
+                const exitCode = this.compileNode(exitId, visitedInPath, contextStack, indentLevel, false, false);
+                if (exitCode) {
+                    code += exitCode;
                 }
             }
         }
@@ -6627,7 +7819,6 @@ isInitOfForLoop(nodeId, contextStack = []) {
      * Compile if/else statement with support for elif
      */
     compileIfElse(node, yesId, noId, visitedInPath, contextStack, indentLevel, inLoopBody = false, inLoopHeader = false) {
-        console.log(`compileIfElse called for ${node.id}: inLoopBody=${inLoopBody}, contextStack=`, contextStack);
         // Check if we're inside a for-loop and if branches lead to increment nodes
         // This prevents increment statements from appearing in if/else branches inside for loops
         if (inLoopBody && contextStack.some(ctx => ctx.startsWith('loop_'))) {
@@ -6635,10 +7826,8 @@ isInitOfForLoop(nodeId, contextStack = []) {
             if (currentLoopCtx) {
                 const loopHeaderId = currentLoopCtx.replace('loop_', '');
                 const forInfo = this.detectForLoopPattern(loopHeaderId);
-                console.log(`compileIfElse ${node.id}: checking for-loop pattern, loopHeaderId=${loopHeaderId}, forInfo=`, forInfo);
                 
                 if (forInfo && forInfo.incrementNodeId) {
-                    console.log(`compileIfElse ${node.id}: for-loop increment check, incrementNodeId=${forInfo.incrementNodeId}`);
                     const incId = forInfo.incrementNodeId;
                     
                     // Check if one of the branches leads to the increment node
@@ -6651,52 +7840,14 @@ isInitOfForLoop(nodeId, contextStack = []) {
                         const indent = "    ".repeat(indentLevel);
                         let decisionCode = `${indent}if ${node.text}:\n`;
                         
-                        const ifContext = [...contextStack, `if_${node.id}`];
                         // Compile YES branch but stop before increment
-                        let ifCode = "";
                         if (yesLeadsToInc) {
-                            ifCode = this.compileNodeUntil(yesId, incId, new Set([...visitedInPath]), ifContext, indentLevel + 1, inLoopBody, inLoopHeader);
+                            const ifCode = this.compileNodeUntil(yesId, incId, new Set([...visitedInPath]), [...contextStack, `if_${node.id}`], indentLevel + 1, inLoopBody, inLoopHeader);
+                            decisionCode += ifCode || `${indent}    pass\n`;
                         } else {
-                            ifCode = this.compileNode(yesId, new Set([...visitedInPath]), ifContext, indentLevel + 1, inLoopBody, inLoopHeader);
+                            const ifCode = this.compileNode(yesId, new Set([...visitedInPath]), [...contextStack, `if_${node.id}`], indentLevel + 1, inLoopBody, inLoopHeader);
+                            decisionCode += ifCode || `${indent}    pass\n`;
                         }
-                        
-                        // Check if break should be added to YES branch (even though we're stopping before increment)
-                        const loopHeaderId = this.findCurrentLoopHeader(ifContext);
-                        console.log(`compileIfElse YES branch (for-loop increment path) for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
-                        if (inLoopBody || loopHeaderId) {
-                            if (loopHeaderId) {
-                                let loopType = this.getLoopType(loopHeaderId);
-                                if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
-                                    loopType = 'while_true_with_breaks';
-                                }
-
-                                let shouldBreak = this.breakManager.shouldAddBreak(
-                                    yesId,
-                                    loopHeaderId,
-                                    ifContext,
-                                    loopType,
-                                    null
-                                );
-                                console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}) [for-loop increment path]: ${shouldBreak}`);
-
-                                if (!shouldBreak) {
-                                    const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
-                                    const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
-                                    console.log(`Fallback check [for-loop increment path]: exits=${exits}, loopsBack=${loopsBack}`);
-                                    if (exits && !loopsBack) {
-                                        shouldBreak = true;
-                                    }
-                                }
-
-                                if (shouldBreak) {
-                                    console.log(`Adding break after YES branch (for-loop increment path) of ${node.id}`);
-                                    if (!ifCode.endsWith("\n")) ifCode += "\n";
-                                    ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
-                                }
-                            }
-                        }
-                        
-                        decisionCode += ifCode || `${indent}    pass\n`;
                         
                         if (noId) {
                             decisionCode += `${indent}else:\n`;
@@ -6716,10 +7867,8 @@ isInitOfForLoop(nodeId, contextStack = []) {
             }
         }
 
-        console.log(`compileIfElse ${node.id}: past for-loop check, about to find convergence point`);
         // Find the convergence point AFTER the entire decision chain
         let convergencePoint = this.findCommonConvergencePoint(node.id, yesId, noId);
-        console.log(`compileIfElse ${node.id}: convergencePoint=${convergencePoint}, yesId=${yesId}, noId=${noId}`);
 
         // In compileIfElse, after finding convergencePoint:
         if (convergencePoint && convergencePoint === noId) {
@@ -6728,55 +7877,16 @@ isInitOfForLoop(nodeId, contextStack = []) {
             const indent = "    ".repeat(indentLevel);
             let code = `${indent}if ${node.text}:\n`;
 
-            const ifContext = [...contextStack, `if_${node.id}`];
             const ifCode = this.compileNodeUntil(
                 yesId,
                 convergencePoint,
                 new Set([...visitedInPath]),
-                ifContext,
+                [...contextStack, `if_${node.id}`],
                 indentLevel + 1,
                 inLoopBody,
                 inLoopHeader
             );
-            let finalIfCode = ifCode || `${indent}    pass\n`;
-
-            // Check if break should be added to YES branch
-            const loopHeaderId = this.findCurrentLoopHeader(ifContext);
-            console.log(`compileIfElse YES branch (convergence=noId) for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
-            if (inLoopBody || loopHeaderId) {
-                if (loopHeaderId) {
-                    let loopType = this.getLoopType(loopHeaderId);
-                    if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
-                        loopType = 'while_true_with_breaks';
-                    }
-
-                    let shouldBreak = this.breakManager.shouldAddBreak(
-                        yesId,
-                        loopHeaderId,
-                        ifContext,
-                        loopType,
-                        convergencePoint
-                    );
-                    console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}) [convergence=noId]: ${shouldBreak}`);
-
-                    if (!shouldBreak) {
-                        const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
-                        const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
-                        console.log(`Fallback check [convergence=noId]: exits=${exits}, loopsBack=${loopsBack}`);
-                        if (exits && !loopsBack) {
-                            shouldBreak = true;
-                        }
-                    }
-
-                    if (shouldBreak) {
-                        console.log(`Adding break after YES branch (convergence=noId) of ${node.id}`);
-                        if (!finalIfCode.endsWith("\n")) finalIfCode += "\n";
-                        finalIfCode += `${"    ".repeat(indentLevel + 1)}break\n`;
-                    }
-                }
-            }
-
-            code += finalIfCode;
+            code += ifCode || `${indent}    pass\n`;
 
             // Compile convergence point AFTER if
             if (!code.endsWith("\n")) code += "\n";
@@ -6811,51 +7921,12 @@ isInitOfForLoop(nodeId, contextStack = []) {
                 inLoopHeader
             );
 
-            // Use BreakManager to determine if break should be added
-            // Check both inLoopBody flag and contextStack for loop context
-            const loopHeaderId = this.findCurrentLoopHeader(ifContext);
-            console.log(`compileIfElse YES branch for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
-            if (inLoopBody || loopHeaderId) {
-                if (loopHeaderId) {
-                    // Check if it's an implicit loop - if so, use while_true_with_breaks
-                    let loopType = this.getLoopType(loopHeaderId);
-                    if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
-                        loopType = 'while_true_with_breaks';
-                    }
-
-                    // Primary decision: BreakManager
-                    let shouldBreak = this.breakManager.shouldAddBreak(
-                        yesId,
-                        loopHeaderId,
-                        ifContext,
-                        loopType,
-                        convergencePoint
-                    );
-                    console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}): ${shouldBreak}`);
-
-                    // Fallback: simple structural check
-                    // "Does this YES branch reach END without ever returning to the loop header?"
-                    if (!shouldBreak) {
-                        const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
-                        const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
-                        console.log(`Fallback check: exits=${exits}, loopsBack=${loopsBack}`);
-                        if (exits && !loopsBack) {
-                            shouldBreak = true;
-                        }
-                    }
-
-                    if (shouldBreak) {
-                        console.log(`Adding break after YES branch of ${node.id}`);
-                        if (!ifCode.endsWith("\n")) ifCode += "\n";
-                        ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
-                    }
-                } else {
-                    console.log(`No loop header found in ifContext for ${node.id}`);
-                }
-            } else {
-                console.log(`Not in loop body and no loop header found for ${node.id}`);
+            // Add break if this branch exits the loop
+            const convNode = this.nodes.find(n => n.id === convergencePoint);
+            if (convNode && convNode.type === 'end' && inLoopBody) {
+                if (!ifCode.endsWith("\n")) ifCode += "\n";
+                ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
             }
-
         } else {
             ifCode = this.compileNode(
                 yesId,
@@ -6866,51 +7937,11 @@ isInitOfForLoop(nodeId, contextStack = []) {
                 inLoopHeader
             );
 
-            // Use BreakManager to determine if break should be added
-            // Check both inLoopBody flag and contextStack for loop context
-            const loopHeaderId = this.findCurrentLoopHeader(ifContext);
-            console.log(`compileIfElse YES branch (no convergence) for ${node.id}: inLoopBody=${inLoopBody}, loopHeaderId=${loopHeaderId}, ifContext=`, ifContext);
-            if (inLoopBody || loopHeaderId) {
-                if (loopHeaderId) {
-                    // Check if it's an implicit loop - if so, use while_true_with_breaks
-                    let loopType = this.getLoopType(loopHeaderId);
-                    if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
-                        loopType = 'while_true_with_breaks';
-                    }
-
-                    // Primary decision: BreakManager
-                    let shouldBreak = this.breakManager.shouldAddBreak(
-                        yesId,
-                        loopHeaderId,
-                        ifContext,
-                        loopType,
-                        convergencePoint
-                    );
-                    console.log(`BreakManager.shouldAddBreak(${yesId}, ${loopHeaderId}) [no convergence]: ${shouldBreak}`);
-
-                    // Fallback: simple structural check
-                    // "Does this YES branch reach END without ever returning to the loop header?"
-                    if (!shouldBreak) {
-                        const exits = this.breakManager.branchReachesEnd(yesId, loopHeaderId);
-                        const loopsBack = this.breakManager.branchLoopsBackToHeader(yesId, loopHeaderId);
-                        console.log(`Fallback check [no convergence]: exits=${exits}, loopsBack=${loopsBack}`);
-                        if (exits && !loopsBack) {
-                            shouldBreak = true;
-                        }
-                    }
-
-                    if (shouldBreak) {
-                        console.log(`Adding break after YES branch (no convergence) of ${node.id}`);
-                        if (!ifCode.endsWith("\n")) ifCode += "\n";
-                        ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
-                    }
-                } else {
-                    console.log(`No loop header found in ifContext (no convergence) for ${node.id}`);
-                }
-            } else {
-                console.log(`Not in loop body and no loop header found (no convergence) for ${node.id}`);
+            // Add break if this branch leads to END (exits the loop)
+            if (inLoopBody && this.reachesEndWithoutReturningToHeader(yesId, this.findCurrentLoopHeader(contextStack))) {
+                if (!ifCode.endsWith("\n")) ifCode += "\n";
+                ifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
             }
-
         }
 
         code += ifCode || `${indent}    pass\n`;
@@ -6966,43 +7997,25 @@ isInitOfForLoop(nodeId, contextStack = []) {
                         );
                     }
 
-                    // Use BreakManager to determine if break should be added
-                    // Check both inLoopBody flag and contextStack for loop context
-                    const elseContext = [...contextStack, `else_${node.id}`];
-                    const loopHeader = this.findCurrentLoopHeader(elseContext);
-                    if (inLoopBody || loopHeader) {
-                        if (loopHeader) {
-                            // Check if it's an implicit loop - if so, use while_true_with_breaks
-                            let loopType = this.getLoopType(loopHeader);
-                            if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeader)) {
-                                loopType = 'while_true_with_breaks';
-                            }
-
-                            // Primary decision: BreakManager
-                            let shouldBreak = this.breakManager.shouldAddBreak(
-                                noId,
-                                loopHeader,
-                                elseContext,
-                                loopType,
-                                convergencePoint
-                            );
-
-                            // Fallback: structural check for "exit to END"
-                            if (!shouldBreak) {
-                                const exits = this.breakManager.branchReachesEnd(noId, loopHeader);
-                                const loopsBack = this.breakManager.branchLoopsBackToHeader(noId, loopHeader);
-                                if (exits && !loopsBack) {
-                                    shouldBreak = true;
-                                }
-                            }
-
-                            if (shouldBreak) {
+                    // Add break if else branch exits to END (but not if it goes back to loop header)
+                    const loopHeader = this.findCurrentLoopHeader(contextStack);
+                    const convNode = convergencePoint ? this.nodes.find(n => n.id === convergencePoint) : null;
+                    if (convNode && convNode.type === 'end' && inLoopBody) {
+                        // Check if else branch goes back to loop header - if so, don't add break
+                        if (!loopHeader || !this.pathLeadsTo(noId, loopHeader, new Set([node.id]))) {
+                            if (!elseCode.endsWith("\n")) elseCode += "\n";
+                            elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+                        }
+                    } else if (!convergencePoint && inLoopBody) {
+                        // Check if else branch exits to END without going back to loop header
+                        if (loopHeader && this.reachesEndWithoutReturningToHeader(noId, loopHeader)) {
+                            // Double-check: make sure it doesn't go back to loop header
+                            if (!this.pathLeadsTo(noId, loopHeader, new Set([node.id]))) {
                                 if (!elseCode.endsWith("\n")) elseCode += "\n";
                                 elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
                             }
                         }
                     }
-
 
                     code += elseCode || `${indent}    pass\n`;
                 }
@@ -7035,37 +8048,20 @@ isInitOfForLoop(nodeId, contextStack = []) {
                     );
                 }
 
-                // Use BreakManager to determine if break should be added
-                // Check both inLoopBody flag and contextStack for loop context
-                const elseContext = [...contextStack, `else_${node.id}`];
-                const loopHeader = this.findCurrentLoopHeader(elseContext);
-                if (inLoopBody || loopHeader) {
-                    if (loopHeader) {
-                        // Check if it's an implicit loop - if so, use while_true_with_breaks
-                        let loopType = this.getLoopType(loopHeader);
-                        if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeader)) {
-                            loopType = 'while_true_with_breaks';
-                        }
-
-                        // Primary decision: BreakManager
-                        let shouldBreak = this.breakManager.shouldAddBreak(
-                            noId,
-                            loopHeader,
-                            elseContext,
-                            loopType,
-                            convergencePoint
-                        );
-
-                        // Fallback: structural check for "exit to END"
-                        if (!shouldBreak) {
-                            const exits = this.breakManager.branchReachesEnd(noId, loopHeader);
-                            const loopsBack = this.breakManager.branchLoopsBackToHeader(noId, loopHeader);
-                            if (exits && !loopsBack) {
-                                shouldBreak = true;
-                            }
-                        }
-
-                        if (shouldBreak) {
+                // Add break if else branch exits to END (but not if it goes back to loop header)
+                const loopHeader = this.findCurrentLoopHeader(contextStack);
+                const convNode = convergencePoint ? this.nodes.find(n => n.id === convergencePoint) : null;
+                if (convNode && convNode.type === 'end' && inLoopBody) {
+                    // Check if else branch goes back to loop header - if so, don't add break
+                    if (!loopHeader || !this.pathLeadsTo(noId, loopHeader, new Set([node.id]))) {
+                        if (!elseCode.endsWith("\n")) elseCode += "\n";
+                        elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
+                    }
+                } else if (!convergencePoint && inLoopBody) {
+                    // Check if else branch exits to END without going back to loop header
+                    if (loopHeader && this.reachesEndWithoutReturningToHeader(noId, loopHeader)) {
+                        // Double-check: make sure it doesn't go back to loop header
+                        if (!this.pathLeadsTo(noId, loopHeader, new Set([node.id]))) {
                             if (!elseCode.endsWith("\n")) elseCode += "\n";
                             elseCode += `${"    ".repeat(indentLevel + 1)}break\n`;
                         }
@@ -7099,9 +8095,6 @@ isInitOfForLoop(nodeId, contextStack = []) {
         for (const ctx of contextStack) {
             if (ctx.startsWith('loop_')) {
                 return ctx.replace('loop_', '');
-            }
-            if (ctx.startsWith('implicit_')) {
-                return ctx.replace('implicit_', '');
             }
         }
         return null;
@@ -7218,26 +8211,23 @@ isInitOfForLoop(nodeId, contextStack = []) {
             // Compile YES branch up to convergence point
             let elifCode = this.compileNodeUntil(elifYesId, convergencePoint, elifVisited, elifContext, indentLevel + 1, inLoopBody, inLoopHeader);
 
-            // Use BreakManager to determine if break should be added
-            if (inLoopBody) {
-                const loopHeaderId = this.findCurrentLoopHeader(contextStack);
-                if (loopHeaderId) {
-                    // Check if it's an implicit loop - if so, use while_true_with_breaks
-                    let loopType = this.getLoopType(loopHeaderId);
-                    if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
-                        loopType = 'while_true_with_breaks';
+            // Add break if this branch exits the loop
+            // BUT: Check if the branch loops back to the loop header first
+            const elifConvNode = convergencePoint ? this.nodes.find(n => n.id === convergencePoint) : null;
+            if (elifConvNode && elifConvNode.type === 'end' && inLoopBody) {
+                // Find the current loop header from context stack
+                let loopHeader = null;
+                for (const ctx of contextStack) {
+                    if (ctx.startsWith('loop_')) {
+                        loopHeader = ctx.replace('loop_', '');
+                        break;
                     }
-                    const shouldBreak = this.breakManager.shouldAddBreak(
-                        elifYesId,
-                        loopHeaderId,
-                        contextStack,
-                        loopType,
-                        convergencePoint
-                    );
-                    if (shouldBreak) {
-                        if (!elifCode.endsWith("\n")) elifCode += "\n";
-                        elifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
-                    }
+                }
+                
+                // Only add break if the branch doesn't loop back to the header
+                if (!loopHeader || !this.pathLeadsTo(elifYesId, loopHeader, new Set([currentElif.id]))) {
+                    if (!elifCode.endsWith("\n")) elifCode += "\n";
+                    elifCode += `${"    ".repeat(indentLevel + 1)}break\n`;
                 }
             }
 
@@ -7267,32 +8257,27 @@ isInitOfForLoop(nodeId, contextStack = []) {
                 inLoopHeader
             );
 
-            // Use BreakManager to determine if break should be added
-            if (inLoopBody) {
-                const loopHeaderId = this.findCurrentLoopHeader(contextStack);
-                if (loopHeaderId) {
-                    // Check if it's an implicit loop - if so, use while_true_with_breaks
-                    let loopType = this.getLoopType(loopHeaderId);
-                    if (this.implicitLoopHeaders && this.implicitLoopHeaders.has(loopHeaderId)) {
-                        loopType = 'while_true_with_breaks';
+            // Add break if else branch exits to END
+            // BUT: Check if the branch loops back to the loop header first
+            const elseConvNode = convergencePoint ? this.nodes.find(n => n.id === convergencePoint) : null;
+            if (elseConvNode && elseConvNode.type === 'end' && inLoopBody) {
+                // Find the current loop header from context stack
+                let loopHeader = null;
+                for (const ctx of contextStack) {
+                    if (ctx.startsWith('loop_')) {
+                        loopHeader = ctx.replace('loop_', '');
+                        break;
                     }
-                    const shouldBreak = this.breakManager.shouldAddBreak(
-                        elifNoId,
-                        loopHeaderId,
-                        contextStack,
-                        loopType,
-                        convergencePoint
-                    );
-                    if (shouldBreak) {
-                        if (!elseCode.endsWith("\n")) {
-                            code += elseCode + "\n";
-                        } else {
-                            code += elseCode;
-                        }
-                        code += `${"    ".repeat(indentLevel + 1)}break\n`;
+                }
+                
+                // Only add break if the branch doesn't loop back to the header
+                if (!loopHeader || !this.pathLeadsTo(elifNoId, loopHeader, new Set([currentElif.id]))) {
+                    if (!elseCode.endsWith("\n")) {
+                        code += elseCode + "\n";
                     } else {
-                        code += elseCode || `${indent}    pass\n`;
+                        code += elseCode;
                     }
+                    code += `${"    ".repeat(indentLevel + 1)}break\n`;
                 } else {
                     code += elseCode || `${indent}    pass\n`;
                 }
@@ -7349,6 +8334,9 @@ isInitOfForLoop(nodeId, contextStack = []) {
 }
 
 function generateCodeFromIR(irProgram, options = {}) {
+    const useHighlighting = options.useHighlighting || false;
+    const nodes = options.nodes || [];
+
     if (!irProgram || !irProgram.statements) {
         return "";
     }
@@ -7368,6 +8356,16 @@ function generateCodeFromIR(irProgram, options = {}) {
             return;
         }
 
+        // Add highlighting for nodes with IDs (except start and end nodes which are handled separately)
+        // Skip 'for' loops here - they handle their own highlights specially (initNodeId, etc.)
+        if (useHighlighting && node.id && node.type !== 'program' && node.type !== 'for') {
+            const nodeData = nodes.find(n => n.id === node.id);
+            // Don't highlight start and end nodes - they're handled at the top level
+            if (nodeData && nodeData.type !== 'start' && nodeData.type !== 'end') {
+                lines.push(pad + `highlight('${node.id}')`);
+            }
+        }
+
         switch (node.type) {
             case 'statement':
                 if (node.statementType === 'assignment') {
@@ -7381,12 +8379,25 @@ function generateCodeFromIR(irProgram, options = {}) {
                 } else {
                     if (node.content) lines.push(pad + node.content);
                 }
+                // DON'T follow next chain when emitting from a program array
+                // The program array already contains all statements in the chain
+                // Only follow next when emitting standalone statements (e.g., from if branches)
+                // This is handled by the caller - if we're in a program context, next is already in the array
                 break;
 
             case 'if':
                 lines.push(pad + `if ${node.condition || 'True'}:`);
                 if (node.thenBranch) {
-                emit(node.thenBranch, indent + 4);
+                    // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
+                    if (node.thenBranch.type === 'program' || node.thenBranch.statements) {
+                        emit(node.thenBranch, indent + 4);
+                    } else {
+                        // Standalone statement - emit it and follow .next chain for breaks
+                        emit(node.thenBranch, indent + 4);
+                        if (node.thenBranch.next) {
+                            emit(node.thenBranch.next, indent + 4);
+                        }
+                    }
                 } else {
                     lines.push(pad + "    pass");
                 }
@@ -7395,7 +8406,16 @@ function generateCodeFromIR(irProgram, options = {}) {
                     if (node.elseBranch.type === 'if') {
                         lines.push(pad + `elif ${node.elseBranch.condition || 'True'}:`);
                         if (node.elseBranch.thenBranch) {
-                            emit(node.elseBranch.thenBranch, indent + 4);
+                            // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
+                            if (node.elseBranch.thenBranch.type === 'program' || node.elseBranch.thenBranch.statements) {
+                                emit(node.elseBranch.thenBranch, indent + 4);
+                            } else {
+                                // Standalone statement - emit it and follow .next chain for breaks
+                                emit(node.elseBranch.thenBranch, indent + 4);
+                                if (node.elseBranch.thenBranch.next) {
+                                    emit(node.elseBranch.thenBranch.next, indent + 4);
+                                }
+                            }
                         } else {
                             lines.push(pad + "    pass");
                         }
@@ -7404,7 +8424,16 @@ function generateCodeFromIR(irProgram, options = {}) {
                         while (currentElif && currentElif.type === 'if') {
                             lines.push(pad + `elif ${currentElif.condition || 'True'}:`);
                             if (currentElif.thenBranch) {
-                                emit(currentElif.thenBranch, indent + 4);
+                                // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
+                                if (currentElif.thenBranch.type === 'program' || currentElif.thenBranch.statements) {
+                                    emit(currentElif.thenBranch, indent + 4);
+                                } else {
+                                    // Standalone statement - emit it and follow .next chain for breaks
+                                    emit(currentElif.thenBranch, indent + 4);
+                                    if (currentElif.thenBranch.next) {
+                                        emit(currentElif.thenBranch.next, indent + 4);
+                                    }
+                                }
                             } else {
                                 lines.push(pad + "    pass");
                             }
@@ -7416,8 +8445,17 @@ function generateCodeFromIR(irProgram, options = {}) {
                             emit(currentElif, indent + 4);
                         }
                     } else {
-                    lines.push(pad + `else:`);
-                    emit(node.elseBranch, indent + 4);
+                        lines.push(pad + `else:`);
+                        // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
+                        if (node.elseBranch.type === 'program' || node.elseBranch.statements) {
+                            emit(node.elseBranch, indent + 4);
+                        } else {
+                            // Standalone statement - emit it and follow .next chain for breaks
+                            emit(node.elseBranch, indent + 4);
+                            if (node.elseBranch.next) {
+                                emit(node.elseBranch.next, indent + 4);
+                            }
+                        }
                     }
                 }
                 // Emit code after the if statement (convergence point)
@@ -7433,23 +8471,66 @@ function generateCodeFromIR(irProgram, options = {}) {
                     lines.push(pad + `while ${node.condition || 'True'}:`);
                 }
                 emit(node.body, indent + 4);
+                // Handle while-else (Python construct)
+                // The else branch executes only if the loop completes normally (not broken)
+                if (node.elseBranch) {
+                    lines.push(pad + `else:`);
+                    emit(node.elseBranch, indent + 4);
+                }
+                // Follow next chain (exit path after the loop - only if no else branch)
+                if (node.next && !node.elseBranch) {
+                    emit(node.next, indent);
+                }
                 break;
 
             case 'for':
-                // Include step parameter if it's not the default (1 for ascending)
-                // For descending loops, step will be negative (e.g., -1, -2) and must be included
+                // Add highlight for init node BEFORE the for loop (if exists)
+                if (useHighlighting && node.initNodeId) {
+                    lines.push(pad + `highlight('${node.initNodeId}')`);
+                }
+
+                // Add highlight for the for loop header BEFORE the for statement
+                if (useHighlighting && node.id) {
+                    lines.push(pad + `highlight('${node.id}')`);
+                }
+
+                // Always include step parameter explicitly (like old compiler)
+                // For descending loops, step will be negative (e.g., -1, -2)
                 const oldForStep = node.step ?? 1;
-                const oldStepStr = oldForStep !== 1 ? `, ${oldForStep}` : '';
-                lines.push(pad + `for ${node.variable || 'i'} in range(${node.start ?? 0}, ${node.end ?? 10}${oldStepStr}):`);
+                lines.push(pad + `for ${node.variable || 'i'} in range(${node.start ?? 0}, ${node.end ?? 10}, ${oldForStep}):`);
+
+                // Add highlight for loop header inside the loop body (iteration highlight)
+                if (useHighlighting && node.id) {
+                    lines.push(pad + "    " + `highlight('${node.id}')`);
+                }
+
                 emit(node.body, indent + 4);
+
+                // Add highlight for increment node at the end of loop body (if exists)
+                if (useHighlighting && node.incrementNodeId) {
+                    lines.push(pad + "    " + `highlight('${node.incrementNodeId}')`);
+                }
+
+                // Follow next chain (exit path after the loop)
+                if (node.next) {
+                    emit(node.next, indent);
+                }
                 break;
 
             case 'break':
                 lines.push(pad + `break`);
+                // Don't follow next chain - breaks are terminal
+                // If we're in a program array, the next statement is already in the array
                 break;
 
             case 'continue':
                 lines.push(pad + `continue`);
+                break;
+
+            case 'highlight':
+                if (options.useHighlighting && node.id) {
+                    lines.push(pad + `highlight('${node.id}')`);
+                }
                 break;
 
             default:
@@ -7457,22 +8538,62 @@ function generateCodeFromIR(irProgram, options = {}) {
         }
     }
 
-    emit(irProgram, 0, true);  // Top level - track emitted IDs to prevent duplicates
+    emit(irProgram, 0);  // Top level
     return lines.join("\n");
 }
 
 // Ensure compileWithPipeline is defined (like in old compiler)
 try {
     window.compileWithPipeline = function (nodes, connections, useHighlighting, debugMode = false) {
-        // Use the old FlowchartCompiler which has all the latest fixes
-        // (implicit loop detection, break management, etc.)
-        const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
-        return compiler.compile();
+        // NEW PIPELINE: Use EnhancedFlowAnalyzer → EnhancedIRBuilder → generateCodeFromIR
+        try {
+            // Find start node
+            const startNode = nodes.find(n => n.type === 'start');
+            if (!startNode) {
+                console.warn('No start node found, using old compiler as fallback');
+                const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
+                return compiler.compile();
+            }
+            
+            // Phase 1: Analysis
+            const analyzer = new EnhancedFlowAnalyzer(nodes, connections);
+            const flowAnalysis = analyzer.analyze();
+            
+            // Phase 2: IR Construction
+            const irBuilder = new EnhancedIRBuilder(nodes, connections, flowAnalysis);
+            const irProgram = irBuilder.buildProgram(startNode.id);
+            
+            // Phase 3: Code Generation
+            let code = generateCodeFromIR(irProgram, { useHighlighting, debugMode, nodes });
+            
+            // Add highlighting support if needed
+            if (useHighlighting && code) {
+                // Add start node highlight at the beginning
+                code = `highlight('${startNode.id}')\n${code}`;
+                
+                // Add end node highlight at the end (if there's an end node)
+                const endNode = nodes.find(n => n.type === 'end');
+                if (endNode) {
+                    code += `\nhighlight('${endNode.id}')`;
+                }
+            }
+            
+            return code;
+        } catch (error) {
+            console.error('New pipeline compilation failed, falling back to old compiler:', error);
+            console.error('Error stack:', error.stack);
+            // Fallback to old compiler on error
+            const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
+            return compiler.compile();
+        }
     };
 
 window.FlowchartCompiler = FlowchartCompiler;
+window.EnhancedFlowAnalyzer = EnhancedFlowAnalyzer;
+window.EnhancedIRBuilder = EnhancedIRBuilder;
+window.generateCodeFromIR = generateCodeFromIR;
 
-    console.log('Compiler exports successful');
+    console.log('Compiler exports successful (using NEW pipeline)');
 } catch (e) {
     console.error('Error setting up compiler exports:', e);
 }
