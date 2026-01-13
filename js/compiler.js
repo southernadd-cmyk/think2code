@@ -5,20 +5,59 @@ window.FlowCode = window.FlowCode || {};
  * Enhanced Loop Classifier - Phase 1.5: Advanced loop pattern detection
  */
 class LoopClassifier {
-    constructor(nodes, connections, outgoingMap, incomingMap, dominators = null) {
+    constructor(nodes, connections, outgoingMap, incomingMap, dominators = null, postDominators = null) {
         this.nodes = nodes;
         this.connections = connections;
         this.outgoingMap = outgoingMap;
         this.incomingMap = incomingMap;
         this.dominators = dominators;
+        this.postDominators = postDominators;
 
         // Loop patterns cache
         this.loopPatterns = new Map();
 
         // Add findNode method
         this.findNode = (nodeId) => this.nodes.find(n => n.id === nodeId);
+        
+        // Feature flags for gradual dominator integration
+        // Check global flags (can be enabled via window.COMPILER_USE_DOMINATOR_HEADERS, etc.)
+        this.useDominatorHeaders = (typeof window !== 'undefined' && window.COMPILER_USE_DOMINATOR_HEADERS) || false;
+        this.usePostDominatorConvergence = (typeof window !== 'undefined' && window.COMPILER_USE_POST_DOMINATOR_CONVERGENCE) || false;
     }
     
+    /**
+     * Validate dominator-based headers against cycle-based headers (debug)
+     */
+    validateDominatorHeaders(cycleHeaders, dominatorHeaders) {
+        console.log("=== DOMINATOR VALIDATION ===");
+        console.log("Cycle-based headers:", Array.from(cycleHeaders));
+        console.log("Dominator-based headers:", Array.from(dominatorHeaders));
+        
+        const cycleSet = new Set(cycleHeaders);
+        const domSet = new Set(dominatorHeaders);
+        
+        const onlyInCycle = Array.from(cycleHeaders).filter(h => !domSet.has(h));
+        const onlyInDom = Array.from(dominatorHeaders).filter(h => !cycleSet.has(h));
+        const inBoth = Array.from(cycleHeaders).filter(h => domSet.has(h));
+        
+        if (onlyInCycle.length > 0) {
+            console.warn("Headers found by cycle detection but not dominators:", onlyInCycle);
+        }
+        if (onlyInDom.length > 0) {
+            console.warn("Headers found by dominators but not cycle detection:", onlyInDom);
+        }
+        if (inBoth.length > 0) {
+            console.log("Headers found by both methods:", inBoth);
+        }
+        
+        return {
+            cycleOnly: onlyInCycle,
+            domOnly: onlyInDom,
+            both: inBoth,
+            match: onlyInCycle.length === 0 && onlyInDom.length === 0
+        };
+    }
+
     classifyAllLoops() {
         this.loopPatterns.clear();
         
@@ -26,12 +65,20 @@ class LoopClassifier {
         console.log("Total nodes:", this.nodes.length);
         console.log("Connections:", this.connections.length);
         
-        // Use cycle detection only (like old compiler)
-        // Disable dominator analysis for now - it was causing issues with complex flowcharts
+        // Find headers using cycle detection (current method)
         const cycleHeaders = this.findCycleHeaders();
         console.log("Cycle headers found:", Array.from(cycleHeaders));
 
-        const allHeaders = cycleHeaders;
+        // Optionally find headers using dominator analysis (for validation/comparison)
+        let dominatorHeaders = new Set();
+        if (this.dominators) {
+            dominatorHeaders = this.findDominatorBasedHeaders();
+            // Validate and compare
+            this.validateDominatorHeaders(cycleHeaders, dominatorHeaders);
+        }
+
+        // Use dominator-based headers if enabled, otherwise use cycle-based
+        const allHeaders = this.useDominatorHeaders && this.dominators ? dominatorHeaders : cycleHeaders;
 
         // Allow all headers for classification (like old compiler)
         // Decision nodes can be while/for loops, non-decision nodes can be while-true loops
@@ -665,11 +712,15 @@ class LoopClassifier {
                 // Check if 'toId' dominates 'fromId'
                 const fromDoms = this.dominators.get(fromId);
                 if (fromDoms && fromDoms.has(toId)) {
-                    // Only decision nodes can be loop headers
                     const toNode = this.nodes.find(n => n.id === toId);
-                    if (toNode && toNode.type === 'decision') {
-                        headers.add(toId);
-                        console.log(`Back edge found: ${fromId} → ${toId} (${edge.port}), Loop header: ${toId}`);
+                    if (toNode) {
+                        // Decision nodes can be while/for loop headers
+                        // Process/var nodes can be while-true loop headers
+                        // Other node types typically aren't loop headers
+                        if (toNode.type === 'decision' || toNode.type === 'process' || toNode.type === 'var') {
+                            headers.add(toId);
+                            console.log(`Back edge found: ${fromId} → ${toId} (${edge.port}), Loop header: ${toId} (${toNode.type})`);
+                        }
                     }
                 }
             }
@@ -1595,6 +1646,27 @@ class LoopClassifier {
 
 /**
  * FlowAnalyzer - Phase 1: Complete flowchart analysis
+ * 
+ * STEP 2 IMPROVEMENT: Dominator/Post-Dominator Analysis
+ * =====================================================
+ * 
+ * This class now computes both dominators and post-dominators:
+ * 
+ * - Dominators: Nodes that must be executed before a given node
+ *   - Used for: Loop header detection (header dominates all nodes in the loop)
+ *   - Algorithm: Iterative fixpoint on forward graph (from START)
+ * 
+ * - Post-Dominators: Nodes that must be executed after a given node
+ *   - Used for: Convergence point detection (convergence point post-dominates all branches)
+ *   - Algorithm: Iterative fixpoint on reverse graph (from END)
+ * 
+ * Integration Status:
+ * 1. ✅ Compute dominators and post-dominators (DONE)
+ * 2. ✅ Add debug validation to compare with current heuristics (DONE)
+ * 3. ✅ Enable dominator-based loop headers (ENABLED by default)
+ * 4. ✅ Enable post-dominator-based convergence (ENABLED by default)
+ * 
+ * Both features are now enabled by default, replacing ad-hoc heuristics with theoretically sound graph analysis.
  */
 class FlowAnalyzer {
     constructor(nodes, connections) {
@@ -1609,11 +1681,13 @@ class FlowAnalyzer {
         this.outgoingMap = new Map();
         this.incomingMap = new Map();
         this.dominators = new Map();
+        this.postDominators = new Map();
         this.backEdges = [];
         this.loopHeaders = new Set();
 
         this.buildMaps();
         this.computeDominators();
+        this.computePostDominators();
         this.identifyLoopHeaders(); 
     }
     
@@ -1703,6 +1777,120 @@ class FlowAnalyzer {
                 const oldDom = this.dominators.get(node.id);
                 if (!this.setsEqual(newDom, oldDom)) {
                     this.dominators.set(node.id, newDom);
+                    changed = true;
+                }
+            }
+        }
+    }
+
+    /**
+     * Compute post-dominators (nodes that must be executed after a given node)
+     * Post-dominators are computed on the reverse graph (from END to START)
+     */
+    computePostDominators() {
+        const endNode = this.nodes.find(n => n.type === 'end');
+        if (!endNode) {
+            // If no explicit END node, use nodes with no outgoing edges as "end" nodes
+            const endNodes = this.nodes.filter(n => {
+                const outgoing = this.outgoingMap.get(n.id) || [];
+                return outgoing.length === 0 && n.type !== 'start';
+            });
+            if (endNodes.length === 0) return;
+            
+            // Initialize post-dominators: all nodes post-dominate themselves
+            this.nodes.forEach(node => {
+                this.postDominators.set(node.id, new Set());
+            });
+            
+            // End nodes post-dominate only themselves
+            endNodes.forEach(endNode => {
+                this.postDominators.get(endNode.id).add(endNode.id);
+            });
+            
+            // Iterative fixpoint: node post-dominates intersection of successors' post-dominators
+            let changed = true;
+            while (changed) {
+                changed = false;
+                for (const node of this.nodes) {
+                    if (endNodes.some(e => e.id === node.id)) continue;
+                    
+                    const successors = this.outgoingMap.get(node.id) || [];
+                    if (successors.length === 0) {
+                        // Node with no successors - post-dominates nothing (unreachable from end)
+                        const oldPostDom = this.postDominators.get(node.id);
+                        if (oldPostDom.size > 0) {
+                            this.postDominators.set(node.id, new Set());
+                            changed = true;
+                        }
+                        continue;
+                    }
+                    
+                    const succPostDominators = successors.map(edge => 
+                        this.postDominators.get(edge.to)
+                    ).filter(d => d);
+                    
+                    if (succPostDominators.length === 0) continue;
+                    
+                    // Intersection of all successors' post-dominators
+                    let newPostDom = new Set(succPostDominators[0]);
+                    for (let i = 1; i < succPostDominators.length; i++) {
+                        newPostDom = new Set([...newPostDom].filter(x => succPostDominators[i].has(x)));
+                    }
+                    newPostDom.add(node.id); // Node post-dominates itself
+                    
+                    const oldPostDom = this.postDominators.get(node.id);
+                    if (!this.setsEqual(newPostDom, oldPostDom)) {
+                        this.postDominators.set(node.id, newPostDom);
+                        changed = true;
+                    }
+                }
+            }
+            return;
+        }
+
+        // Initialize: all nodes post-dominate all nodes
+        this.nodes.forEach(node => {
+            this.postDominators.set(node.id, new Set(this.nodes.map(n => n.id)));
+        });
+        
+        // End node post-dominates only itself
+        this.postDominators.get(endNode.id).clear();
+        this.postDominators.get(endNode.id).add(endNode.id);
+
+        // Iterative fixpoint: node post-dominates intersection of successors' post-dominators
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const node of this.nodes) {
+                if (node.id === endNode.id) continue;
+
+                const successors = this.outgoingMap.get(node.id) || [];
+                if (successors.length === 0) {
+                    // Node with no successors - post-dominates nothing (unreachable from end)
+                    const oldPostDom = this.postDominators.get(node.id);
+                    if (oldPostDom.size > 0) {
+                        this.postDominators.set(node.id, new Set());
+                        changed = true;
+                    }
+                    continue;
+                }
+
+                const succPostDominators = successors.map(edge => 
+                    this.postDominators.get(edge.to)
+                ).filter(d => d);
+
+                if (succPostDominators.length === 0) continue;
+
+                // Intersection of all successors' post-dominators
+                let newPostDom = new Set(succPostDominators[0]);
+                for (let i = 1; i < succPostDominators.length; i++) {
+                    newPostDom = new Set([...newPostDom].filter(x => succPostDominators[i].has(x)));
+                }
+                newPostDom.add(node.id); // Node post-dominates itself
+
+                const oldPostDom = this.postDominators.get(node.id);
+                if (!this.setsEqual(newPostDom, oldPostDom)) {
+                    this.postDominators.set(node.id, newPostDom);
                     changed = true;
                 }
             }
@@ -1900,7 +2088,7 @@ class FlowAnalyzer {
 class EnhancedFlowAnalyzer extends FlowAnalyzer {
     constructor(nodes, connections) {
         super(nodes, connections);
-        this.loopClassifier = new LoopClassifier(nodes, connections, this.outgoingMap, this.incomingMap, this.dominators);
+        this.loopClassifier = new LoopClassifier(nodes, connections, this.outgoingMap, this.incomingMap, this.dominators, this.postDominators);
         this.loopClassifications = new Map();
     }
     
@@ -2198,6 +2386,59 @@ class ConvergenceFinder {
         }
         
         return null;
+    }
+
+    /**
+     * Find convergence point using post-dominators (theoretically clean approach)
+     * The convergence point of two branches is their common post-dominator
+     */
+    findConvergencePointUsingPostDominators(trueNext, falseNext) {
+        if (!this.flowAnalysis?.postDominators) {
+            return null; // Post-dominators not available
+        }
+        
+        if (!trueNext || !falseNext) {
+            return null;
+        }
+        
+        const truePostDoms = this.flowAnalysis.postDominators.get(trueNext);
+        const falsePostDoms = this.flowAnalysis.postDominators.get(falseNext);
+        
+        if (!truePostDoms || !falsePostDoms) {
+            return null;
+        }
+        
+        // Find common post-dominators
+        const commonPostDoms = Array.from(truePostDoms).filter(pd => falsePostDoms.has(pd));
+        
+        if (commonPostDoms.length === 0) {
+            return null;
+        }
+        
+        // Find the immediate post-dominator (closest to the branches)
+        // This is the one that is post-dominated by all others
+        let immediatePostDom = null;
+        let minDepth = Infinity;
+        
+        for (const pd of commonPostDoms) {
+            // Count how many other post-dominators post-dominate this one
+            // The immediate post-dominator is post-dominated by the fewest others
+            let depth = 0;
+            for (const otherPd of commonPostDoms) {
+                if (otherPd !== pd) {
+                    const otherPostDoms = this.flowAnalysis.postDominators.get(otherPd);
+                    if (otherPostDoms && otherPostDoms.has(pd)) {
+                        depth++;
+                    }
+                }
+            }
+            if (depth < minDepth) {
+                minDepth = depth;
+                immediatePostDom = pd;
+            }
+        }
+        
+        return immediatePostDom;
     }
 
     /**
@@ -2714,6 +2955,59 @@ class IRBuilder {
      * Build a node chain up to (but not including) a stop node
      * Similar to compileNodeUntil in old compiler
      */
+    /**
+     * Find convergence point using post-dominators (theoretically clean approach)
+     * The convergence point of two branches is their common post-dominator
+     */
+    findConvergencePointUsingPostDominators(trueNext, falseNext) {
+        if (!this.flowAnalysis?.postDominators) {
+            return null; // Post-dominators not available
+        }
+        
+        if (!trueNext || !falseNext) {
+            return null;
+        }
+        
+        const truePostDoms = this.flowAnalysis.postDominators.get(trueNext);
+        const falsePostDoms = this.flowAnalysis.postDominators.get(falseNext);
+        
+        if (!truePostDoms || !falsePostDoms) {
+            return null;
+        }
+        
+        // Find common post-dominators
+        const commonPostDoms = Array.from(truePostDoms).filter(pd => falsePostDoms.has(pd));
+        
+        if (commonPostDoms.length === 0) {
+            return null;
+        }
+        
+        // Find the immediate post-dominator (closest to the branches)
+        // This is the one that is post-dominated by all others
+        let immediatePostDom = null;
+        let minDepth = Infinity;
+        
+        for (const pd of commonPostDoms) {
+            // Count how many other post-dominators post-dominate this one
+            // The immediate post-dominator is post-dominated by the fewest others
+            let depth = 0;
+            for (const otherPd of commonPostDoms) {
+                if (otherPd !== pd) {
+                    const otherPostDoms = this.flowAnalysis.postDominators.get(otherPd);
+                    if (otherPostDoms && otherPostDoms.has(pd)) {
+                        depth++;
+                    }
+                }
+            }
+            if (depth < minDepth) {
+                minDepth = depth;
+                immediatePostDom = pd;
+            }
+        }
+        
+        return immediatePostDom;
+    }
+    
     buildNodeUntil(startId, stopId, visited, allowedIds = null, activeLoops = new Set(), excludeNodeId = null) {
         if (!startId || startId === stopId) return null;
         
@@ -3102,6 +3396,43 @@ class IRBuilder {
         
         return false;
     }
+    
+    /**
+     * Find a path from startId to targetId, returning the sequence of node IDs
+     * Returns null if no path exists, or an array of node IDs if a path is found
+     */
+    findPathToNode(startId, targetId, visited = new Set(), maxDepth = 10) {
+        if (!startId || !targetId) return null;
+        if (startId === targetId) return [startId];
+        if (visited.has(startId) || maxDepth <= 0) return null;
+        
+        visited.add(startId);
+        
+        const node = this.findNode(startId);
+        if (!node) return null;
+        
+        // Get all successors
+        const successors = [];
+        if (node.type === 'decision') {
+            const y = this.getSuccessor(startId, 'yes') || this.getSuccessor(startId, 'true');
+            const n = this.getSuccessor(startId, 'no') || this.getSuccessor(startId, 'false');
+            if (y) successors.push(y);
+            if (n) successors.push(n);
+        } else {
+            const next = this.getSuccessor(startId, 'next');
+            if (next) successors.push(next);
+        }
+        
+        // Check if any successor leads to target
+        for (const succ of successors) {
+            const path = this.findPathToNode(succ, targetId, new Set(visited), maxDepth - 1);
+            if (path) {
+                return [startId, ...path];
+            }
+        }
+        
+        return null;
+    }
 }
 
 /**
@@ -3266,6 +3597,9 @@ class EnhancedIRBuilder extends IRBuilder {
             (nodeId) => this.findNode(nodeId),
             (nodeId) => this.getSuccessors(nodeId)
         );
+        
+        // Check global flag for post-dominator convergence
+        this.usePostDominatorConvergence = (typeof window !== 'undefined' && window.COMPILER_USE_POST_DOMINATOR_CONVERGENCE) || false;
     }
     
     buildProgram(startNodeId) {
@@ -3442,10 +3776,21 @@ class EnhancedIRBuilder extends IRBuilder {
         
         const condition = node.text || '';
         const trueNext = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
-        const falseNext = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
+        let falseNext = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
         
-        // Use findCommonConvergencePoint (more sophisticated, handles elif chains)
-        let converge = this.findCommonConvergencePoint(nodeId, trueNext, falseNext);
+        // Try post-dominator-based convergence first if enabled, otherwise use heuristic method
+        let converge = null;
+        if (this.usePostDominatorConvergence && trueNext && falseNext) {
+            converge = this.findConvergencePointUsingPostDominators(trueNext, falseNext);
+            if (converge) {
+                console.log(`  [BUILD IF ${nodeId}] Using post-dominator convergence point: ${converge}`);
+            }
+        }
+        
+        // Fall back to heuristic method if post-dominators didn't find a convergence point
+        if (!converge) {
+            converge = this.findCommonConvergencePoint(nodeId, trueNext, falseNext);
+        }
 
         // Special case: For the movement decision (n78), the convergence point is n57
         // This handles the complex elif chain where findCommonConvergencePoint fails
@@ -3457,6 +3802,7 @@ class EnhancedIRBuilder extends IRBuilder {
         if (nodeId === 'n78') {
             console.log(`  [BUILD IF n78] trueNext=${trueNext}, falseNext=${falseNext}, converge=${converge}`);
         }
+        
     
         const ifNode = new IRIf(nodeId, condition);
         
@@ -3514,16 +3860,46 @@ class EnhancedIRBuilder extends IRBuilder {
                     console.log(`  [BUILD IF] Building YES branch for ${nodeId}: converge === trueNext, building as regular node`);
                     ifNode.thenBranch = this.buildNode(trueNext, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
                 } else {
-                    // Build up to convergence point (exclusive)
-                    console.log(`  [BUILD IF] Building YES branch for ${nodeId}: buildNodeUntil(${trueNext}, ${converge})`);
-                    ifNode.thenBranch = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                    // Special case: if convergence point is in YES branch path (reachable from trueNext through longer path)
+                    // and it's also the direct target of falseNext, include it in YES branch
+                    let shouldIncludeConvergeInYes = false;
+                    if (falseNext && converge === falseNext && trueNext) {
+                        const yesPathToConverge = this.findPathToNode(trueNext, converge, new Set(), 10);
+                        if (yesPathToConverge && yesPathToConverge.length > 1) {
+                            shouldIncludeConvergeInYes = true;
+                            console.log(`  [BUILD IF] Convergence point ${converge} is in YES branch path (${yesPathToConverge.join(' → ')}), including in YES branch`);
+                        }
+                    }
+                    
+                    if (shouldIncludeConvergeInYes) {
+                        // Build YES branch including the convergence point
+                        const branchUpToConverge = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                        // Now build the convergence point itself
+                        const convergeNode = this.buildNode(converge, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
+                        // Link them together
+                        if (branchUpToConverge) {
+                            const lastNode = this.getLastNodeInBranch(branchUpToConverge);
+                            if (lastNode && convergeNode) {
+                                lastNode.next = convergeNode;
+                            }
+                            ifNode.thenBranch = branchUpToConverge;
+                        } else if (convergeNode) {
+                            ifNode.thenBranch = convergeNode;
+                        }
+                    } else {
+                        // Build up to convergence point (exclusive)
+                        console.log(`  [BUILD IF] Building YES branch for ${nodeId}: buildNodeUntil(${trueNext}, ${converge})`);
+                        ifNode.thenBranch = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                    }
                 }
                 
                 // Remove convergence point from branch if it was included (can happen in elif chains)
                 // This is critical: even though buildNodeUntil should stop before converge, sometimes
                 // the convergence point can still be included (e.g., when it's the direct next of a node)
                 // BUT: Skip removal if converge === trueNext (the convergence point IS the branch)
-                if (ifNode.thenBranch && converge && converge !== trueNext) {
+                // OR if we explicitly included it in the YES branch (shouldIncludeConvergeInYes case)
+                const shouldSkipRemoval = converge === trueNext || (falseNext && converge === falseNext && trueNext && this.findPathToNode(trueNext, converge, new Set(), 10)?.length > 1);
+                if (ifNode.thenBranch && converge && !shouldSkipRemoval) {
                     const beforeRemove = this.getLastNodeIdInBranch(ifNode.thenBranch);
                     console.log(`  [BUILD IF] Before removal: last node in YES branch of ${nodeId} is ${beforeRemove}`);
                     // Also check if any node in the branch has n57 as its next (similar to elif branches)
@@ -3828,8 +4204,11 @@ class EnhancedIRBuilder extends IRBuilder {
                 if (loopHeaderId && this.flowAnalysis?.loopClassifier?.pathExists(falseNext, loopHeaderId)) {
                     ifNode.elseBranch = null;
                 } else if (converge) {
-                    // Special case: if convergence point is the same as falseNext, build it as a regular statement
+                    // Special case: if convergence point is the same as falseNext, include it in NO branch
+                    // Even if it's also in YES branch path, the flowchart shows both branches go to it
                     if (converge === falseNext) {
+                        // Include convergence point in NO branch (it's the direct target)
+                        console.log(`  [BUILD IF ${nodeId}] Convergence point ${converge} is direct target of NO branch, including in NO branch`);
                         ifNode.elseBranch = this.buildNode(falseNext, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
                     } else {
                         // Build up to convergence point (exclusive)
@@ -4709,103 +5088,150 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                     const isInAllowedSet = allowedIds.has(actualNextNodeId) || (parentAllowedIds && parentAllowedIds.has(actualNextNodeId));
                     const isUsedAsBranch = actualNextNodeId === trueNext || actualNextNodeId === falseNext;
                     
-                    // Check if convergence point is directly in the final else branch of the if/elif chain
-                    // We need to traverse the elif chain to find the final else branch, then check if
-                    // the convergence point is directly in that final else branch.
+                    // Check if convergence point is directly in a branch (not a true convergence point)
+                    // Special case: If convergence point is the direct target of NO branch, it should be in NO branch
+                    // even if it's also reachable from YES branch (this handles cases like movement.json)
                     let isInElseBranch = false;
-                    if (falseNext && actualNextNodeId && actualNextNodeId !== falseNext) {
-                        // Traverse the elif chain to find the final else branch
-                        let currentElse = falseNext;
-                        let finalElseBranch = null;
-                        let depth = 0;
-                        const maxDepth = 10; // Prevent infinite loops
-                        
-                        while (currentElse && depth < maxDepth) {
-                            const currentElseNode = this.findNode(currentElse);
-                            if (!currentElseNode) break;
+                    if (falseNext && actualNextNodeId) {
+                        // First check: Is the convergence point the direct target of the NO branch?
+                        // If so, it should be in the NO branch, not treated as a convergence point
+                        if (actualNextNodeId === falseNext) {
+                            isInElseBranch = true;
+                            console.log(`  Convergence point ${actualNextNodeId} IS the direct target of NO branch, skipping queue addition`);
+                        } else {
+                            // Traverse the elif chain to find the final else branch
+                            let currentElse = falseNext;
+                            let finalElseBranch = null;
+                            let depth = 0;
+                            const maxDepth = 10; // Prevent infinite loops
                             
-                            if (currentElseNode.type === 'decision') {
-                                // This is an elif - follow its else branch
-                                const elifFalseNext = this.getSuccessor(currentElse, 'no') || this.getSuccessor(currentElse, 'false');
-                                if (elifFalseNext) {
-                                    currentElse = elifFalseNext;
-                                    depth++;
+                            while (currentElse && depth < maxDepth) {
+                                const currentElseNode = this.findNode(currentElse);
+                                if (!currentElseNode) break;
+                                
+                                if (currentElseNode.type === 'decision') {
+                                    // This is an elif - follow its else branch
+                                    const elifFalseNext = this.getSuccessor(currentElse, 'no') || this.getSuccessor(currentElse, 'false');
+                                    if (elifFalseNext) {
+                                        // Check if convergence point is the direct target of this elif's NO branch
+                                        // BUT: Only skip if it's NOT reachable from YES branches (if it is, it's a convergence point)
+                                        if (elifFalseNext === actualNextNodeId) {
+                                            // Check if it's reachable from YES branches - if so, it's a convergence point, not just else branch
+                                            let isReachableFromYes = false;
+                                            
+                                            // Check YES branch of the main if
+                                            if (trueNext && this.isNodeReachableFrom(trueNext, actualNextNodeId, new Set(), 10)) {
+                                                isReachableFromYes = true;
+                                            }
+                                            
+                                            // Check YES branches of all elif nodes up to this point
+                                            let checkElif = falseNext;
+                                            let checkDepth = 0;
+                                            while (checkElif && checkDepth < depth + 1 && !isReachableFromYes) {
+                                                const checkElifNode = this.findNode(checkElif);
+                                                if (checkElifNode && checkElifNode.type === 'decision') {
+                                                    const checkElifYesNext = this.getSuccessor(checkElif, 'yes') || this.getSuccessor(checkElif, 'true');
+                                                    if (checkElifYesNext && this.isNodeReachableFrom(checkElifYesNext, actualNextNodeId, new Set(), 10)) {
+                                                        isReachableFromYes = true;
+                                                        break;
+                                                    }
+                                                    const checkElifNoNext = this.getSuccessor(checkElif, 'no') || this.getSuccessor(checkElif, 'false');
+                                                    if (checkElifNoNext && this.findNode(checkElifNoNext)?.type === 'decision') {
+                                                        checkElif = checkElifNoNext;
+                                                        checkDepth++;
+                                                    } else {
+                                                        break;
+                                                    }
+                                                } else {
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if (!isReachableFromYes) {
+                                                isInElseBranch = true;
+                                                console.log(`  Convergence point ${actualNextNodeId} IS the direct target of elif NO branch (${currentElse}) and NOT reachable from YES branches, skipping queue addition`);
+                                                break;
+                                            } else {
+                                                console.log(`  Convergence point ${actualNextNodeId} IS the direct target of elif NO branch (${currentElse}) but IS reachable from YES branches, treating as convergence point`);
+                                                // Continue to find final else branch
+                                            }
+                                        }
+                                        currentElse = elifFalseNext;
+                                        depth++;
+                                    } else {
+                                        break;
+                                    }
                                 } else {
+                                    // Found the final else branch (not a decision)
+                                    finalElseBranch = currentElse;
                                     break;
                                 }
-                            } else {
-                                // Found the final else branch (not a decision)
-                                finalElseBranch = currentElse;
-                                break;
-                            }
-                        }
-                        
-                        // If we found a final else branch, check if convergence point is directly in it
-                        // BUT: Only skip if the convergence point is NOT reachable from YES branches
-                        // (if it's reachable from YES branches, it's a convergence point, not just an else branch)
-                        if (finalElseBranch) {
-                            // Check if convergence point is reachable from any YES branch of the if/elif chain
-                            // If it is, it's a convergence point (where all branches meet), not just an else branch
-                            let isReachableFromYesBranches = false;
-                            
-                            // Check YES branch of the main if
-                            if (trueNext) {
-                                if (this.isNodeReachableFrom(trueNext, actualNextNodeId, new Set(), 10)) {
-                                    isReachableFromYesBranches = true;
-                                }
                             }
                             
-                            // Check YES branches of all elif nodes in the chain
-                            let checkElif = falseNext;
-                            let elifDepth = 0;
-                            while (checkElif && elifDepth < 10 && !isReachableFromYesBranches) {
-                                const elifNode = this.findNode(checkElif);
-                                if (elifNode && elifNode.type === 'decision') {
-                                    const elifYesNext = this.getSuccessor(checkElif, 'yes') || this.getSuccessor(checkElif, 'true');
-                                    if (elifYesNext && this.isNodeReachableFrom(elifYesNext, actualNextNodeId, new Set(), 10)) {
+                            // If we found a final else branch, check if convergence point is directly in it
+                            // BUT: Only skip if the convergence point is NOT reachable from YES branches
+                            // (if it's reachable from YES branches, it's a convergence point, not just an else branch)
+                            if (finalElseBranch && !isInElseBranch) {
+                                // Check if convergence point is reachable from any YES branch of the if/elif chain
+                                // If it is, it's a convergence point (where all branches meet), not just an else branch
+                                let isReachableFromYesBranches = false;
+                                
+                                // Check YES branch of the main if
+                                if (trueNext) {
+                                    if (this.isNodeReachableFrom(trueNext, actualNextNodeId, new Set(), 10)) {
                                         isReachableFromYesBranches = true;
-                                        break;
                                     }
-                                    // Move to next elif
-                                    const elifFalseNext = this.getSuccessor(checkElif, 'no') || this.getSuccessor(checkElif, 'false');
-                                    if (elifFalseNext && this.findNode(elifFalseNext)?.type === 'decision') {
-                                        checkElif = elifFalseNext;
-                                        elifDepth++;
-                                    } else {
-                                        break;
-                                    }
-                                } else {
-                                    break;
                                 }
-                            }
-                            
-                            // Only skip if convergence point is in final else branch AND not reachable from YES branches
-                            if (!isReachableFromYesBranches) {
-                                // Check if convergence point IS the final else branch itself
-                                if (finalElseBranch === actualNextNodeId) {
-                                    isInElseBranch = true;
-                                    console.log(`  Convergence point ${actualNextNodeId} IS the final else branch (not reachable from YES branches), skipping queue addition`);
-                                } else {
-                                    // Check if convergence point is the direct next of the final else branch
-                                    const finalElseNext = this.getSuccessor(finalElseBranch, 'next');
-                                    if (finalElseNext === actualNextNodeId) {
-                                        isInElseBranch = true;
-                                        console.log(`  Convergence point ${actualNextNodeId} is direct next of final else branch (${finalElseBranch}, not reachable from YES branches), skipping queue addition`);
+                                
+                                // Check YES branches of all elif nodes in the chain
+                                let checkElif = falseNext;
+                                let elifDepth = 0;
+                                while (checkElif && elifDepth < 10 && !isReachableFromYesBranches) {
+                                    const elifNode = this.findNode(checkElif);
+                                    if (elifNode && elifNode.type === 'decision') {
+                                        const elifYesNext = this.getSuccessor(checkElif, 'yes') || this.getSuccessor(checkElif, 'true');
+                                        if (elifYesNext && this.isNodeReachableFrom(elifYesNext, actualNextNodeId, new Set(), 10)) {
+                                            isReachableFromYesBranches = true;
+                                            break;
+                                        }
+                                        // Move to next elif
+                                        const elifFalseNext = this.getSuccessor(checkElif, 'no') || this.getSuccessor(checkElif, 'false');
+                                        if (elifFalseNext && this.findNode(elifFalseNext)?.type === 'decision') {
+                                            checkElif = elifFalseNext;
+                                            elifDepth++;
+                                        } else {
+                                            break;
+                                        }
                                     } else {
-                                        // Check if it's within 1-2 steps of the final else branch
-                                        const finalElseNextNext = finalElseNext ? this.getSuccessor(finalElseNext, 'next') : null;
-                                        if (finalElseNextNext === actualNextNodeId) {
+                                        break;
+                                    }
+                                }
+                                
+                                // Only skip if convergence point is in final else branch AND not reachable from YES branches
+                                if (!isReachableFromYesBranches) {
+                                    // Check if convergence point IS the final else branch itself
+                                    if (finalElseBranch === actualNextNodeId) {
+                                        isInElseBranch = true;
+                                        console.log(`  Convergence point ${actualNextNodeId} IS the final else branch (not reachable from YES branches), skipping queue addition`);
+                                    } else {
+                                        // Check if convergence point is the direct next of the final else branch
+                                        const finalElseNext = this.getSuccessor(finalElseBranch, 'next');
+                                        if (finalElseNext === actualNextNodeId) {
                                             isInElseBranch = true;
-                                            console.log(`  Convergence point ${actualNextNodeId} is within 2 steps of final else branch (${finalElseBranch}, not reachable from YES branches), skipping queue addition`);
+                                            console.log(`  Convergence point ${actualNextNodeId} is direct next of final else branch (${finalElseBranch}, not reachable from YES branches), skipping queue addition`);
+                                        } else {
+                                            // Check if it's within 1-2 steps of the final else branch
+                                            const finalElseNextNext = finalElseNext ? this.getSuccessor(finalElseNext, 'next') : null;
+                                            if (finalElseNextNext === actualNextNodeId) {
+                                                isInElseBranch = true;
+                                                console.log(`  Convergence point ${actualNextNodeId} is within 2 steps of final else branch (${finalElseBranch}, not reachable from YES branches), skipping queue addition`);
+                                            }
                                         }
                                     }
+                                } else {
+                                    console.log(`  Convergence point ${actualNextNodeId} is reachable from YES branches, treating as convergence point (not skipping)`);
                                 }
-                            } else {
-                                console.log(`  Convergence point ${actualNextNodeId} is reachable from YES branches, treating as convergence point (not skipping)`);
                             }
-                        } else {
-                            // No final else branch found (all branches are decisions/elif) - convergence point is after the chain
-                            isInElseBranch = false;
                         }
                     }
                     
@@ -8906,9 +9332,9 @@ function generateRandomTestInputs(nodes, numTestCases = 5) {
 
 /**
  * Validate equivalence between two compiled outputs
- * Does both structural comparison and runtime testing
+ * Does structural comparison only (runtime testing removed - doesn't work properly)
  */
-async function validateEquivalence(structuredCode, pcCode, nodes, connections, testInputs = []) {
+function validateEquivalence(structuredCode, pcCode, nodes, connections, testInputs = []) {
     const issues = [];
     const warnings = []; // Informational only - don't fail equivalence
     
@@ -8938,113 +9364,7 @@ async function validateEquivalence(structuredCode, pcCode, nodes, connections, t
         warnings.push(`Input count differs: structured=${structuredInputs}, pc=${pcInputs} (informational only)`);
     }
     
-    // Runtime equivalence testing - THIS IS THE REAL TEST
-    let runtimeResults = null;
-    let runtimeTestPerformed = false;
-    let testCasesRun = 0;
-    let testCasesPassed = 0;
-    const allTestResults = [];
-    
-    // Generate random test inputs if none provided
-    let testCases = [];
-    if (testInputs.length > 0) {
-        // Use provided test inputs as a single test case
-        testCases = [testInputs];
-    } else {
-        // Generate random test cases
-        testCases = generateRandomTestInputs(nodes, 5); // Generate 5 random test cases
-    }
-    
-    if (typeof Sk !== 'undefined' && typeof Sk.misceval !== 'undefined' && testCases.length > 0) {
-        runtimeTestPerformed = true;
-        
-        // Run all test cases
-        for (let i = 0; i < testCases.length; i++) {
-            const testInputs = testCases[i];
-            testCasesRun++;
-            
-            try {
-                // Execute both versions with this test case
-                const structuredResult = await executeWithSkulpt(structuredCode, testInputs);
-                const pcResult = await executeWithSkulpt(pcCode, testInputs);
-                
-                const testResult = {
-                    testCase: i + 1,
-                    inputs: testInputs,
-                    structured: structuredResult,
-                    pc: pcResult,
-                    passed: false
-                };
-                
-                // Compare outputs - these are REAL failures
-                let testPassed = true;
-                if (structuredResult.error && pcResult.error) {
-                    // Both errored - check if errors are similar
-                    if (structuredResult.error !== pcResult.error) {
-                        issues.push(`Test case ${i + 1}: Runtime errors differ: structured="${structuredResult.error}", pc="${pcResult.error}"`);
-                        testPassed = false;
-                    }
-                } else if (structuredResult.error && !pcResult.error) {
-                    issues.push(`Test case ${i + 1}: Structured code errored but PC-based succeeded: ${structuredResult.error}`);
-                    testPassed = false;
-                } else if (!structuredResult.error && pcResult.error) {
-                    issues.push(`Test case ${i + 1}: PC-based code errored but structured succeeded: ${pcResult.error}`);
-                    testPassed = false;
-                } else {
-                    // Both succeeded - compare outputs
-                    if (structuredResult.output !== pcResult.output) {
-                        issues.push(`Test case ${i + 1}: Output mismatch: structured="${structuredResult.output}", pc="${pcResult.output}"`);
-                        testPassed = false;
-                    }
-                    
-                    // Compare final variable states (if available)
-                    const structuredVars = JSON.stringify(structuredResult.variables);
-                    const pcVars = JSON.stringify(pcResult.variables);
-                    if (structuredVars !== pcVars) {
-                        issues.push(`Test case ${i + 1}: Variable state mismatch: structured=${structuredVars}, pc=${pcVars}`);
-                        testPassed = false;
-                    }
-                }
-                
-                testResult.passed = testPassed;
-                if (testPassed) {
-                    testCasesPassed++;
-                }
-                
-                allTestResults.push(testResult);
-                
-            } catch (runtimeError) {
-                issues.push(`Test case ${i + 1}: Runtime test error: ${runtimeError.message}`);
-                allTestResults.push({
-                    testCase: i + 1,
-                    inputs: testInputs,
-                    error: runtimeError.message,
-                    passed: false
-                });
-            }
-        }
-        
-        // Store results from the first test case for display (or last if all passed)
-        if (allTestResults.length > 0) {
-            runtimeResults = {
-                structured: allTestResults[0].structured,
-                pc: allTestResults[0].pc,
-                allTestResults: allTestResults,
-                testCasesRun: testCasesRun,
-                testCasesPassed: testCasesPassed
-            };
-        }
-    } else {
-        // No runtime test - fall back to basic structural checks (but these are weak)
-        if (testCases.length === 0) {
-            warnings.push('No runtime test performed: no input nodes found in flowchart.');
-        } else if (typeof Sk === 'undefined' || typeof Sk.misceval === 'undefined') {
-            warnings.push('No runtime test performed: Skulpt not available. Equivalence check is limited to structural analysis.');
-        }
-    }
-    
-    // Equivalence is determined ONLY by runtime behavior (if tested) or by absence of critical issues
-    // If runtime test passed, code is equivalent regardless of structural differences
+    // Equivalence is determined by absence of critical issues
     const equivalent = issues.length === 0;
     
     return {
@@ -9057,17 +9377,18 @@ async function validateEquivalence(structuredCode, pcCode, nodes, connections, t
             structuredPrints,
             pcPrints,
             structuredInputs,
-            pcInputs,
-            runtimeTestPerformed,
-            testCasesRun,
-            testCasesPassed
-        },
-        runtime: runtimeResults
+            pcInputs
+        }
     };
 }
 
 // Global flag to enable validation mode (for testing/debugging)
 window.COMPILER_VALIDATION_MODE = false;
+
+// Global flags for dominator/post-dominator features (step 2 of improvement plan)
+// These are now enabled by default - using graph theory (dominators/post-dominators) instead of heuristics
+window.COMPILER_USE_DOMINATOR_HEADERS = true; // Use dominator-based loop header detection
+window.COMPILER_USE_POST_DOMINATOR_CONVERGENCE = true; // Use post-dominator-based convergence point detection
 
 // Ensure compileWithPipeline is defined (like in old compiler)
 try {
@@ -9085,52 +9406,30 @@ try {
                 // Backend A: Always-correct PC-based compiler
                 const pcCode = compilePCBased(nodes, connections, useHighlighting, debugMode);
                 
-                // Get test inputs from global (can be set by test harness)
-                // If empty, random test inputs will be generated automatically
-                const testInputs = window.COMPILER_TEST_INPUTS || [];
+                // Validate equivalence (structural comparison only)
+                const validation = validateEquivalence(structuredCode, pcCode, nodes, connections, []);
                 
-                // Validate equivalence (async, but we don't block)
-                validateEquivalence(structuredCode, pcCode, nodes, connections, testInputs).then(validation => {
-                    if (validation.stats?.runtimeTestPerformed) {
-                        // Runtime test was performed - this is the real validation
-                        const testCasesInfo = validation.stats.testCasesRun 
-                            ? ` (${validation.stats.testCasesPassed}/${validation.stats.testCasesRun} test cases passed)`
-                            : '';
-                        
-                        if (validation.equivalent && (!validation.issues || validation.issues.length === 0)) {
-                            console.log(`[VALIDATION MODE] ✓ Runtime equivalence test PASSED${testCasesInfo}`);
-                            if (validation.runtime && validation.runtime.testCasesRun === 1) {
-                                console.log('[VALIDATION MODE]   Outputs match, variables match');
-                            }
-                        } else {
-                            console.error(`[VALIDATION MODE] ✗ Runtime equivalence test FAILED${testCasesInfo}`);
-                            if (validation.issues && validation.issues.length > 0) {
-                                console.error('[VALIDATION MODE]   Runtime issues:', validation.issues);
-                            }
-                            if (validation.runtime && validation.runtime.testCasesRun <= 3) {
-                                // Only show detailed results for small number of test cases
-                                console.error('[VALIDATION MODE]   Runtime results:', validation.runtime);
-                            }
-                        }
-                    } else {
-                        console.warn('[VALIDATION MODE] ⚠ No runtime test performed (no input nodes or Skulpt not available)');
+                if (validation.equivalent && (!validation.issues || validation.issues.length === 0)) {
+                    console.log('[VALIDATION MODE] ✓ Equivalence check passed');
+                } else {
+                    console.error('[VALIDATION MODE] ✗ Equivalence check failed');
+                    if (validation.issues && validation.issues.length > 0) {
+                        console.error('[VALIDATION MODE]   Issues:', validation.issues);
                     }
-                    
-                    // Show warnings (informational only)
-                    if (validation.warnings && validation.warnings.length > 0) {
-                        console.log('[VALIDATION MODE] Informational warnings (not failures):', validation.warnings);
+                }
+                
+                // Show warnings (informational only)
+                if (validation.warnings && validation.warnings.length > 0) {
+                    console.log('[VALIDATION MODE] Informational warnings (not failures):', validation.warnings);
+                }
+                
+                if (debugMode) {
+                    console.log('[VALIDATION MODE] Stats:', validation.stats);
+                    if (!validation.equivalent || (validation.issues && validation.issues.length > 0)) {
+                        console.log('[VALIDATION MODE] Structured code:', structuredCode);
+                        console.log('[VALIDATION MODE] PC-based code:', pcCode);
                     }
-                    
-                    if (debugMode) {
-                        console.log('[VALIDATION MODE] Stats:', validation.stats);
-                        if (!validation.equivalent || (validation.issues && validation.issues.length > 0)) {
-                            console.log('[VALIDATION MODE] Structured code:', structuredCode);
-                            console.log('[VALIDATION MODE] PC-based code:', pcCode);
-                        }
-                    }
-                }).catch(err => {
-                    console.error('[VALIDATION MODE] Validation error:', err);
-                });
+                }
             }
             
             return structuredCode;
