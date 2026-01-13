@@ -5271,6 +5271,38 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                         console.warn(`  Convergence point ${actualNextNodeId} for if ${currentNodeId} is outside allowedIds and parentAllowedIds`);
                     } else if (!actualNextNodeId) {
                         console.warn(`  No convergence point found for if statement ${currentNodeId} (trueNext=${trueNext}, falseNext=${falseNext})`);
+                        // When convergence point is cleared (e.g., update node), try to find the next node to continue from
+                        // Check if falseNext is an update node - if so, find the loop's exit node
+                        if (falseNext) {
+                            const updateNodeInfo = this.convergenceFinder.isUpdateNode(falseNext);
+                            if (updateNodeInfo.isUpdate && updateNodeInfo.exitNode) {
+                                // The falseNext is an update node - continue from the loop's exit node
+                                const exitNode = updateNodeInfo.exitNode;
+                                if (allowedIds.has(exitNode) && !seenIds.has(exitNode) && !localVisited.has(exitNode)) {
+                                    console.log(`  Continuing from loop exit node ${exitNode} after if statement ${currentNodeId} (update node was convergence point)`);
+                                    queue.push({ id: exitNode, depth: depth + 1 });
+                                }
+                            }
+                        }
+                        // Also check if trueNext leads to an update node
+                        if (trueNext && !actualNextNodeId) {
+                            // Check what comes after trueNext - if it's an update node, get its exit node
+                            const trueNextNext = this.getSuccessor(trueNext, 'next');
+                            if (trueNextNext) {
+                                const trueNextUpdateInfo = this.convergenceFinder.isUpdateNode(trueNextNext);
+                                if (trueNextUpdateInfo.isUpdate && trueNextUpdateInfo.exitNode) {
+                                    const exitNode = trueNextUpdateInfo.exitNode;
+                                    if (allowedIds.has(exitNode) && !seenIds.has(exitNode) && !localVisited.has(exitNode)) {
+                                        console.log(`  Continuing from loop exit node ${exitNode} after if statement ${currentNodeId} (trueNext leads to update node)`);
+                                        queue.push({ id: exitNode, depth: depth + 1 });
+                                    }
+                                } else if (allowedIds.has(trueNextNext) && !seenIds.has(trueNextNext) && !localVisited.has(trueNextNext)) {
+                                    // trueNextNext is not an update node, continue from it
+                                    console.log(`  Continuing from ${trueNextNext} after if statement ${currentNodeId} (no convergence point)`);
+                                    queue.push({ id: trueNextNext, depth: depth + 1 });
+                                }
+                            }
+                        }
                     }
                 }
                 continue;
