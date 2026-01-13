@@ -3066,6 +3066,42 @@ class IRBuilder {
 
         return true;
     }
+    
+    /**
+     * Check if targetId is reachable from startId
+     * Used to check if a convergence point is already in a branch
+     */
+    isNodeReachableFrom(startId, targetId, visited = new Set(), maxDepth = 10) {
+        if (!startId || !targetId) return false;
+        if (startId === targetId) return true;
+        if (visited.has(startId) || maxDepth <= 0) return false;
+        
+        visited.add(startId);
+        
+        const node = this.findNode(startId);
+        if (!node) return false;
+        
+        // Get all successors
+        const successors = [];
+        if (node.type === 'decision') {
+            const y = this.getSuccessor(startId, 'yes') || this.getSuccessor(startId, 'true');
+            const n = this.getSuccessor(startId, 'no') || this.getSuccessor(startId, 'false');
+            if (y) successors.push(y);
+            if (n) successors.push(n);
+        } else {
+            const next = this.getSuccessor(startId, 'next');
+            if (next) successors.push(next);
+        }
+        
+        // Check if any successor leads to target
+        for (const succ of successors) {
+            if (this.isNodeReachableFrom(succ, targetId, new Set(visited), maxDepth - 1)) {
+                return true;
+            }
+        }
+        
+        return false;
+    }
 }
 
 /**
@@ -4672,10 +4708,112 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                     // BUT: Skip if it's an update node for a for-loop (handled by Python's range())
                     const isInAllowedSet = allowedIds.has(actualNextNodeId) || (parentAllowedIds && parentAllowedIds.has(actualNextNodeId));
                     const isUsedAsBranch = actualNextNodeId === trueNext || actualNextNodeId === falseNext;
+                    
+                    // Check if convergence point is directly in the final else branch of the if/elif chain
+                    // We need to traverse the elif chain to find the final else branch, then check if
+                    // the convergence point is directly in that final else branch.
+                    let isInElseBranch = false;
+                    if (falseNext && actualNextNodeId && actualNextNodeId !== falseNext) {
+                        // Traverse the elif chain to find the final else branch
+                        let currentElse = falseNext;
+                        let finalElseBranch = null;
+                        let depth = 0;
+                        const maxDepth = 10; // Prevent infinite loops
+                        
+                        while (currentElse && depth < maxDepth) {
+                            const currentElseNode = this.findNode(currentElse);
+                            if (!currentElseNode) break;
+                            
+                            if (currentElseNode.type === 'decision') {
+                                // This is an elif - follow its else branch
+                                const elifFalseNext = this.getSuccessor(currentElse, 'no') || this.getSuccessor(currentElse, 'false');
+                                if (elifFalseNext) {
+                                    currentElse = elifFalseNext;
+                                    depth++;
+                                } else {
+                                    break;
+                                }
+                            } else {
+                                // Found the final else branch (not a decision)
+                                finalElseBranch = currentElse;
+                                break;
+                            }
+                        }
+                        
+                        // If we found a final else branch, check if convergence point is directly in it
+                        // BUT: Only skip if the convergence point is NOT reachable from YES branches
+                        // (if it's reachable from YES branches, it's a convergence point, not just an else branch)
+                        if (finalElseBranch) {
+                            // Check if convergence point is reachable from any YES branch of the if/elif chain
+                            // If it is, it's a convergence point (where all branches meet), not just an else branch
+                            let isReachableFromYesBranches = false;
+                            
+                            // Check YES branch of the main if
+                            if (trueNext) {
+                                if (this.isNodeReachableFrom(trueNext, actualNextNodeId, new Set(), 10)) {
+                                    isReachableFromYesBranches = true;
+                                }
+                            }
+                            
+                            // Check YES branches of all elif nodes in the chain
+                            let checkElif = falseNext;
+                            let elifDepth = 0;
+                            while (checkElif && elifDepth < 10 && !isReachableFromYesBranches) {
+                                const elifNode = this.findNode(checkElif);
+                                if (elifNode && elifNode.type === 'decision') {
+                                    const elifYesNext = this.getSuccessor(checkElif, 'yes') || this.getSuccessor(checkElif, 'true');
+                                    if (elifYesNext && this.isNodeReachableFrom(elifYesNext, actualNextNodeId, new Set(), 10)) {
+                                        isReachableFromYesBranches = true;
+                                        break;
+                                    }
+                                    // Move to next elif
+                                    const elifFalseNext = this.getSuccessor(checkElif, 'no') || this.getSuccessor(checkElif, 'false');
+                                    if (elifFalseNext && this.findNode(elifFalseNext)?.type === 'decision') {
+                                        checkElif = elifFalseNext;
+                                        elifDepth++;
+                                    } else {
+                                        break;
+                                    }
+                                } else {
+                                    break;
+                                }
+                            }
+                            
+                            // Only skip if convergence point is in final else branch AND not reachable from YES branches
+                            if (!isReachableFromYesBranches) {
+                                // Check if convergence point IS the final else branch itself
+                                if (finalElseBranch === actualNextNodeId) {
+                                    isInElseBranch = true;
+                                    console.log(`  Convergence point ${actualNextNodeId} IS the final else branch (not reachable from YES branches), skipping queue addition`);
+                                } else {
+                                    // Check if convergence point is the direct next of the final else branch
+                                    const finalElseNext = this.getSuccessor(finalElseBranch, 'next');
+                                    if (finalElseNext === actualNextNodeId) {
+                                        isInElseBranch = true;
+                                        console.log(`  Convergence point ${actualNextNodeId} is direct next of final else branch (${finalElseBranch}, not reachable from YES branches), skipping queue addition`);
+                                    } else {
+                                        // Check if it's within 1-2 steps of the final else branch
+                                        const finalElseNextNext = finalElseNext ? this.getSuccessor(finalElseNext, 'next') : null;
+                                        if (finalElseNextNext === actualNextNodeId) {
+                                            isInElseBranch = true;
+                                            console.log(`  Convergence point ${actualNextNodeId} is within 2 steps of final else branch (${finalElseBranch}, not reachable from YES branches), skipping queue addition`);
+                                        }
+                                    }
+                                }
+                            } else {
+                                console.log(`  Convergence point ${actualNextNodeId} is reachable from YES branches, treating as convergence point (not skipping)`);
+                            }
+                        } else {
+                            // No final else branch found (all branches are decisions/elif) - convergence point is after the chain
+                            isInElseBranch = false;
+                        }
+                    }
+                    
                     if (!isNestedLoopExit && actualNextNodeId && actualNextNodeId !== headerId &&
                         isInAllowedSet &&
                         !seenIds.has(actualNextNodeId) && !localVisited.has(actualNextNodeId) &&
                         !isUsedAsBranch &&
+                        !isInElseBranch &&
                         shouldAddToQueue(actualNextNodeId, shouldStop)) {
                         if (shouldStop) {
                             console.log(`  Adding convergence point ${actualNextNodeId} to queue after if statement ${currentNodeId} (will stop after building - update node)`);
@@ -4685,6 +4823,8 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                         queue.push({ id: actualNextNodeId, depth: depth + 1, stopAfter: shouldStop });
                     } else if (isUsedAsBranch) {
                         console.log(`  Skipping convergence point ${actualNextNodeId} for if ${currentNodeId} - used as branch`);
+                    } else if (isInElseBranch) {
+                        console.log(`  Skipping convergence point ${actualNextNodeId} for if ${currentNodeId} - already in else branch`);
                     } else if (!isNestedLoopExit && actualNextNodeId && !isInAllowedSet) {
                         console.warn(`  Convergence point ${actualNextNodeId} for if ${currentNodeId} is outside allowedIds and parentAllowedIds`);
                     } else if (!actualNextNodeId) {
@@ -8545,49 +8685,460 @@ function generateCodeFromIR(irProgram, options = {}) {
     return lines.join("\n");
 }
 
-// Ensure compileWithPipeline is defined (like in old compiler)
-try {
-    window.compileWithPipeline = function (nodes, connections, useHighlighting, debugMode = false) {
-        // NEW PIPELINE: Use EnhancedFlowAnalyzer → EnhancedIRBuilder → generateCodeFromIR
-        try {
-            // Find start node
-            const startNode = nodes.find(n => n.type === 'start');
-            if (!startNode) {
-                console.warn('No start node found, using old compiler as fallback');
-                const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
-                return compiler.compile();
-            }
+/**
+ * Compile using PC-based state machine approach (always correct, mirrors graph directly)
+ * This is the "gold standard" backend for correctness validation
+ */
+function compilePCBased(nodes, connections, useHighlighting = false, debugMode = false) {
+    const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
+    return compiler.compileAsStateMachine();
+}
+
+/**
+ * Compile using structured codegen (pretty, but may have edge cases)
+ * This is the "pretty" backend for user-facing code
+ */
+function compileStructured(nodes, connections, useHighlighting = false, debugMode = false) {
+    // Find start node
+    const startNode = nodes.find(n => n.type === 'start');
+    if (!startNode) {
+        console.warn('No start node found, using PC-based compiler as fallback');
+        return compilePCBased(nodes, connections, useHighlighting, debugMode);
+    }
+    
+    // Phase 1: Analysis
+    const analyzer = new EnhancedFlowAnalyzer(nodes, connections);
+    const flowAnalysis = analyzer.analyze();
+    
+    // Phase 2: IR Construction
+    const irBuilder = new EnhancedIRBuilder(nodes, connections, flowAnalysis);
+    const irProgram = irBuilder.buildProgram(startNode.id);
+    
+    // Phase 3: Code Generation
+    let code = generateCodeFromIR(irProgram, { useHighlighting, debugMode, nodes });
+    
+    // Add highlighting support if needed
+    if (useHighlighting && code) {
+        // Add start node highlight at the beginning
+        code = `highlight('${startNode.id}')\n${code}`;
+        
+        // Add end node highlight at the end (if there's an end node)
+        const endNode = nodes.find(n => n.type === 'end');
+        if (endNode) {
+            code += `\nhighlight('${endNode.id}')`;
+        }
+    }
+    
+    return code;
+}
+
+/**
+ * Execute Python code with Skulpt and capture output
+ * @param {string} code - Python code to execute
+ * @param {Array} testInputs - Array of input values to provide when input() is called
+ * @param {number} timeout - Maximum execution time in ms
+ * @returns {Promise<{output: string, error: string|null, variables: object}>}
+ */
+async function executeWithSkulpt(code, testInputs = [], timeout = 5000) {
+    return new Promise((resolve) => {
+        const output = [];
+        const variables = {};
+        let inputIndex = 0;
+        let timedOut = false;
+        
+        const timeoutId = setTimeout(() => {
+            timedOut = true;
+            resolve({
+                output: output.join(''),
+                error: 'Execution timeout',
+                variables: variables,
+                timedOut: true
+            });
+        }, timeout);
+        
+        // Configure Skulpt for testing
+        // Store original config (Skulpt may not return it from configure())
+        const originalConfig = {
+            output: Sk.configure().output || ((text) => {}),
+            inputfun: Sk.configure().inputfun || (() => ''),
+            inputfunTakesPrompt: Sk.configure().inputfunTakesPrompt || false
+        };
+        
+        Sk.configure({
+            output: (text) => {
+                output.push(text);
+            },
+            inputfun: (prompt) => {
+                if (inputIndex < testInputs.length) {
+                    return testInputs[inputIndex++];
+                }
+                return ''; // Default empty input
+            },
+            inputfunTakesPrompt: true
+        });
+        
+        // Remove highlight calls for testing (they cause delays)
+        const testCode = code.replace(/highlight\([^)]+\)\s*\n?/g, '');
+        
+        // Execute code
+        Sk.misceval.asyncToPromise(() =>
+            Sk.importMainWithBody("<test>", false, testCode, true)
+        ).then(() => {
+            clearTimeout(timeoutId);
             
-            // Phase 1: Analysis
-            const analyzer = new EnhancedFlowAnalyzer(nodes, connections);
-            const flowAnalysis = analyzer.analyze();
-            
-            // Phase 2: IR Construction
-            const irBuilder = new EnhancedIRBuilder(nodes, connections, flowAnalysis);
-            const irProgram = irBuilder.buildProgram(startNode.id);
-            
-            // Phase 3: Code Generation
-            let code = generateCodeFromIR(irProgram, { useHighlighting, debugMode, nodes });
-            
-            // Add highlighting support if needed
-            if (useHighlighting && code) {
-                // Add start node highlight at the beginning
-                code = `highlight('${startNode.id}')\n${code}`;
-                
-                // Add end node highlight at the end (if there's an end node)
-                const endNode = nodes.find(n => n.type === 'end');
-                if (endNode) {
-                    code += `\nhighlight('${endNode.id}')`;
+            // Capture variables
+            if (Sk.globals) {
+                for (const key in Sk.globals) {
+                    if (!key.startsWith('__') && key !== 'highlight' && key !== 'input' && key !== 'print') {
+                        const val = Sk.globals[key];
+                        if (val !== null && typeof val === 'object' && val.v !== undefined) {
+                            variables[key] = val.v;
+                        } else {
+                            variables[key] = val;
+                        }
+                    }
                 }
             }
             
-            return code;
+            // Restore original Skulpt config
+            Sk.configure({
+                output: originalConfig.output,
+                inputfun: originalConfig.inputfun,
+                inputfunTakesPrompt: originalConfig.inputfunTakesPrompt
+            });
+            
+            resolve({
+                output: output.join(''),
+                error: null,
+                variables: variables,
+                timedOut: false
+            });
+        }).catch((error) => {
+            clearTimeout(timeoutId);
+            
+            // Restore original Skulpt config
+            Sk.configure({
+                output: originalConfig.output,
+                inputfun: originalConfig.inputfun,
+                inputfunTakesPrompt: originalConfig.inputfunTakesPrompt
+            });
+            
+            const errorMsg = error.toString ? error.toString() : String(error);
+            resolve({
+                output: output.join(''),
+                error: errorMsg,
+                variables: variables,
+                timedOut: false
+            });
+        });
+    });
+}
+
+/**
+ * Generate random test inputs based on flowchart structure
+ * Analyzes input nodes and generates appropriate random data
+ */
+function generateRandomTestInputs(nodes, numTestCases = 5) {
+    // Find all input nodes
+    const inputNodes = nodes.filter(n => n.type === 'input');
+    
+    if (inputNodes.length === 0) {
+        return []; // No inputs needed
+    }
+    
+    // Generate multiple test cases
+    const testCases = [];
+    for (let i = 0; i < numTestCases; i++) {
+        const testCase = [];
+        
+        for (const inputNode of inputNodes) {
+            const dtype = inputNode.dtype || 'str';
+            
+            if (dtype === 'int') {
+                // Generate random integer (range: -100 to 100, with some edge cases)
+                let value;
+                const rand = Math.random();
+                if (rand < 0.1) {
+                    value = 0; // Edge case: zero
+                } else if (rand < 0.2) {
+                    value = 1; // Edge case: one
+                } else if (rand < 0.3) {
+                    value = -1; // Edge case: negative one
+                } else if (rand < 0.4) {
+                    value = Math.floor(Math.random() * 10) + 1; // Small positive (1-10)
+                } else if (rand < 0.5) {
+                    value = -(Math.floor(Math.random() * 10) + 1); // Small negative (-1 to -10)
+                } else {
+                    // Random in range -100 to 100
+                    value = Math.floor(Math.random() * 201) - 100;
+                }
+                testCase.push(String(value));
+            } else {
+                // Generate random string
+                const rand = Math.random();
+                let value;
+                if (rand < 0.1) {
+                    value = ''; // Edge case: empty string
+                } else if (rand < 0.2) {
+                    value = 'yes'; // Common string
+                } else if (rand < 0.3) {
+                    value = 'no'; // Common string
+                } else if (rand < 0.4) {
+                    value = 'Q'; // Common quit command
+                } else {
+                    // Random alphanumeric string (length 1-10)
+                    const length = Math.floor(Math.random() * 10) + 1;
+                    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+                    value = '';
+                    for (let j = 0; j < length; j++) {
+                        value += chars.charAt(Math.floor(Math.random() * chars.length));
+                    }
+                }
+                testCase.push(value);
+            }
+        }
+        
+        testCases.push(testCase);
+    }
+    
+    return testCases;
+}
+
+/**
+ * Validate equivalence between two compiled outputs
+ * Does both structural comparison and runtime testing
+ */
+async function validateEquivalence(structuredCode, pcCode, nodes, connections, testInputs = []) {
+    const issues = [];
+    const warnings = []; // Informational only - don't fail equivalence
+    
+    // Basic checks
+    if (!structuredCode || !pcCode) {
+        issues.push('One or both compilations failed');
+        return { equivalent: false, issues, warnings: [] };
+    }
+    
+    // Count key statements (informational only - not used for equivalence)
+    const structuredLines = structuredCode.split('\n').filter(l => l.trim());
+    const pcLines = pcCode.split('\n').filter(l => l.trim());
+    
+    // Check for critical statements (print, input, assignments) - informational only
+    const structuredPrints = (structuredCode.match(/print\(/g) || []).length;
+    const pcPrints = (pcCode.match(/print\(/g) || []).length;
+    
+    const structuredInputs = (structuredCode.match(/input\(/g) || []).length;
+    const pcInputs = (pcCode.match(/input\(/g) || []).length;
+    
+    // These are warnings, not failures - different code structures can produce same runtime behavior
+    if (structuredPrints !== pcPrints) {
+        warnings.push(`Print count differs: structured=${structuredPrints}, pc=${pcPrints} (informational only)`);
+    }
+    
+    if (structuredInputs !== pcInputs) {
+        warnings.push(`Input count differs: structured=${structuredInputs}, pc=${pcInputs} (informational only)`);
+    }
+    
+    // Runtime equivalence testing - THIS IS THE REAL TEST
+    let runtimeResults = null;
+    let runtimeTestPerformed = false;
+    let testCasesRun = 0;
+    let testCasesPassed = 0;
+    const allTestResults = [];
+    
+    // Generate random test inputs if none provided
+    let testCases = [];
+    if (testInputs.length > 0) {
+        // Use provided test inputs as a single test case
+        testCases = [testInputs];
+    } else {
+        // Generate random test cases
+        testCases = generateRandomTestInputs(nodes, 5); // Generate 5 random test cases
+    }
+    
+    if (typeof Sk !== 'undefined' && typeof Sk.misceval !== 'undefined' && testCases.length > 0) {
+        runtimeTestPerformed = true;
+        
+        // Run all test cases
+        for (let i = 0; i < testCases.length; i++) {
+            const testInputs = testCases[i];
+            testCasesRun++;
+            
+            try {
+                // Execute both versions with this test case
+                const structuredResult = await executeWithSkulpt(structuredCode, testInputs);
+                const pcResult = await executeWithSkulpt(pcCode, testInputs);
+                
+                const testResult = {
+                    testCase: i + 1,
+                    inputs: testInputs,
+                    structured: structuredResult,
+                    pc: pcResult,
+                    passed: false
+                };
+                
+                // Compare outputs - these are REAL failures
+                let testPassed = true;
+                if (structuredResult.error && pcResult.error) {
+                    // Both errored - check if errors are similar
+                    if (structuredResult.error !== pcResult.error) {
+                        issues.push(`Test case ${i + 1}: Runtime errors differ: structured="${structuredResult.error}", pc="${pcResult.error}"`);
+                        testPassed = false;
+                    }
+                } else if (structuredResult.error && !pcResult.error) {
+                    issues.push(`Test case ${i + 1}: Structured code errored but PC-based succeeded: ${structuredResult.error}`);
+                    testPassed = false;
+                } else if (!structuredResult.error && pcResult.error) {
+                    issues.push(`Test case ${i + 1}: PC-based code errored but structured succeeded: ${pcResult.error}`);
+                    testPassed = false;
+                } else {
+                    // Both succeeded - compare outputs
+                    if (structuredResult.output !== pcResult.output) {
+                        issues.push(`Test case ${i + 1}: Output mismatch: structured="${structuredResult.output}", pc="${pcResult.output}"`);
+                        testPassed = false;
+                    }
+                    
+                    // Compare final variable states (if available)
+                    const structuredVars = JSON.stringify(structuredResult.variables);
+                    const pcVars = JSON.stringify(pcResult.variables);
+                    if (structuredVars !== pcVars) {
+                        issues.push(`Test case ${i + 1}: Variable state mismatch: structured=${structuredVars}, pc=${pcVars}`);
+                        testPassed = false;
+                    }
+                }
+                
+                testResult.passed = testPassed;
+                if (testPassed) {
+                    testCasesPassed++;
+                }
+                
+                allTestResults.push(testResult);
+                
+            } catch (runtimeError) {
+                issues.push(`Test case ${i + 1}: Runtime test error: ${runtimeError.message}`);
+                allTestResults.push({
+                    testCase: i + 1,
+                    inputs: testInputs,
+                    error: runtimeError.message,
+                    passed: false
+                });
+            }
+        }
+        
+        // Store results from the first test case for display (or last if all passed)
+        if (allTestResults.length > 0) {
+            runtimeResults = {
+                structured: allTestResults[0].structured,
+                pc: allTestResults[0].pc,
+                allTestResults: allTestResults,
+                testCasesRun: testCasesRun,
+                testCasesPassed: testCasesPassed
+            };
+        }
+    } else {
+        // No runtime test - fall back to basic structural checks (but these are weak)
+        if (testCases.length === 0) {
+            warnings.push('No runtime test performed: no input nodes found in flowchart.');
+        } else if (typeof Sk === 'undefined' || typeof Sk.misceval === 'undefined') {
+            warnings.push('No runtime test performed: Skulpt not available. Equivalence check is limited to structural analysis.');
+        }
+    }
+    
+    // Equivalence is determined ONLY by runtime behavior (if tested) or by absence of critical issues
+    // If runtime test passed, code is equivalent regardless of structural differences
+    const equivalent = issues.length === 0;
+    
+    return {
+        equivalent,
+        issues,
+        warnings,
+        stats: {
+            structuredLines: structuredLines.length,
+            pcLines: pcLines.length,
+            structuredPrints,
+            pcPrints,
+            structuredInputs,
+            pcInputs,
+            runtimeTestPerformed,
+            testCasesRun,
+            testCasesPassed
+        },
+        runtime: runtimeResults
+    };
+}
+
+// Global flag to enable validation mode (for testing/debugging)
+window.COMPILER_VALIDATION_MODE = false;
+
+// Ensure compileWithPipeline is defined (like in old compiler)
+try {
+    window.compileWithPipeline = function (nodes, connections, useHighlighting, debugMode = false) {
+        const validationMode = window.COMPILER_VALIDATION_MODE || false;
+        
+        try {
+            // Backend B: Pretty structured compiler (current approach)
+            const structuredCode = compileStructured(nodes, connections, useHighlighting, debugMode);
+            
+            // In validation mode: also compile with PC-based backend and validate
+            if (validationMode) {
+                console.log('[VALIDATION MODE] Compiling with both backends...');
+                
+                // Backend A: Always-correct PC-based compiler
+                const pcCode = compilePCBased(nodes, connections, useHighlighting, debugMode);
+                
+                // Get test inputs from global (can be set by test harness)
+                // If empty, random test inputs will be generated automatically
+                const testInputs = window.COMPILER_TEST_INPUTS || [];
+                
+                // Validate equivalence (async, but we don't block)
+                validateEquivalence(structuredCode, pcCode, nodes, connections, testInputs).then(validation => {
+                    if (validation.stats?.runtimeTestPerformed) {
+                        // Runtime test was performed - this is the real validation
+                        const testCasesInfo = validation.stats.testCasesRun 
+                            ? ` (${validation.stats.testCasesPassed}/${validation.stats.testCasesRun} test cases passed)`
+                            : '';
+                        
+                        if (validation.equivalent && (!validation.issues || validation.issues.length === 0)) {
+                            console.log(`[VALIDATION MODE] ✓ Runtime equivalence test PASSED${testCasesInfo}`);
+                            if (validation.runtime && validation.runtime.testCasesRun === 1) {
+                                console.log('[VALIDATION MODE]   Outputs match, variables match');
+                            }
+                        } else {
+                            console.error(`[VALIDATION MODE] ✗ Runtime equivalence test FAILED${testCasesInfo}`);
+                            if (validation.issues && validation.issues.length > 0) {
+                                console.error('[VALIDATION MODE]   Runtime issues:', validation.issues);
+                            }
+                            if (validation.runtime && validation.runtime.testCasesRun <= 3) {
+                                // Only show detailed results for small number of test cases
+                                console.error('[VALIDATION MODE]   Runtime results:', validation.runtime);
+                            }
+                        }
+                    } else {
+                        console.warn('[VALIDATION MODE] ⚠ No runtime test performed (no input nodes or Skulpt not available)');
+                    }
+                    
+                    // Show warnings (informational only)
+                    if (validation.warnings && validation.warnings.length > 0) {
+                        console.log('[VALIDATION MODE] Informational warnings (not failures):', validation.warnings);
+                    }
+                    
+                    if (debugMode) {
+                        console.log('[VALIDATION MODE] Stats:', validation.stats);
+                        if (!validation.equivalent || (validation.issues && validation.issues.length > 0)) {
+                            console.log('[VALIDATION MODE] Structured code:', structuredCode);
+                            console.log('[VALIDATION MODE] PC-based code:', pcCode);
+                        }
+                    }
+                }).catch(err => {
+                    console.error('[VALIDATION MODE] Validation error:', err);
+                });
+            }
+            
+            return structuredCode;
         } catch (error) {
-            console.error('New pipeline compilation failed, falling back to old compiler:', error);
+            console.error('Structured compilation failed, falling back to PC-based compiler:', error);
             console.error('Error stack:', error.stack);
-            // Fallback to old compiler on error
-            const compiler = new FlowchartCompiler(nodes, connections, useHighlighting, debugMode);
-            return compiler.compile();
+            // Fallback to PC-based compiler on error (always correct)
+            return compilePCBased(nodes, connections, useHighlighting, debugMode);
         }
     };
 
@@ -8595,6 +9146,11 @@ window.FlowchartCompiler = FlowchartCompiler;
 window.EnhancedFlowAnalyzer = EnhancedFlowAnalyzer;
 window.EnhancedIRBuilder = EnhancedIRBuilder;
 window.generateCodeFromIR = generateCodeFromIR;
+window.compilePCBased = compilePCBased;
+window.compileStructured = compileStructured;
+window.validateEquivalence = validateEquivalence;
+window.executeWithSkulpt = executeWithSkulpt;
+window.generateRandomTestInputs = generateRandomTestInputs;
 
     console.log('Compiler exports successful (using NEW pipeline)');
 } catch (e) {
