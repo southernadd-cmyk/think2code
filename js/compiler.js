@@ -1238,7 +1238,7 @@ class LoopClassifier {
         return false;
     }
     
-    findLoopBodyNodes(headerId, stopBeforeId) {
+    findLoopBodyNodes(headerId, updateNodeId) {
         const bodyNodes = new Set();
         const queue = [];
 
@@ -1253,22 +1253,24 @@ class LoopClassifier {
         // BFS to collect body nodes
         while (queue.length > 0) {
             const nodeId = queue.shift();
-            if (nodeId === headerId || bodyNodes.has(nodeId) || nodeId === stopBeforeId) {
+            if (nodeId === headerId || bodyNodes.has(nodeId)) {
                 continue;
             }
 
-            bodyNodes.add(nodeId);
+            // Don't include the update node itself in the body
+            if (nodeId !== updateNodeId) {
+                bodyNodes.add(nodeId);
+            }
 
-            // Add successors (don't exclude nodes with exit paths - they might still be part of the loop body)
-            // But stop before the update node
+            // Add successors (stop when reaching nodes that loop back to header)
             const succOutgoing = this.outgoingMap.get(nodeId) || [];
             for (const edge of succOutgoing) {
-                if (edge.to !== headerId && edge.to !== stopBeforeId && !bodyNodes.has(edge.to)) {
+                if (edge.to !== headerId && !bodyNodes.has(edge.to)) {
                     queue.push(edge.to);
                 }
             }
         }
-        
+
         return Array.from(bodyNodes);
     }
     
