@@ -4328,6 +4328,19 @@ class EnhancedIRBuilder extends IRBuilder {
     }
     
     /**
+     * Check if a node ID is already in a branch chain
+     */
+    isNodeInBranch(branchIR, nodeId) {
+        if (!branchIR || !nodeId) return false;
+        let current = branchIR;
+        while (current) {
+            if (current.id === nodeId) return true;
+            current = current.next;
+        }
+        return false;
+    }
+    
+    /**
      * Remove a convergence point node from a branch chain if it's present
      * This is used to prevent duplicate convergence points in elif chains
      * Recursively checks nested structures (like if statements in branches)
@@ -5271,35 +5284,23 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                         console.warn(`  Convergence point ${actualNextNodeId} for if ${currentNodeId} is outside allowedIds and parentAllowedIds`);
                     } else if (!actualNextNodeId) {
                         console.warn(`  No convergence point found for if statement ${currentNodeId} (trueNext=${trueNext}, falseNext=${falseNext})`);
-                        // When convergence point is cleared (e.g., update node), try to find the next node to continue from
-                        // Check if falseNext is an update node - if so, find the loop's exit node
-                        if (falseNext) {
-                            const updateNodeInfo = this.convergenceFinder.isUpdateNode(falseNext);
-                            if (updateNodeInfo.isUpdate && updateNodeInfo.exitNode) {
-                                // The falseNext is an update node - continue from the loop's exit node
-                                const exitNode = updateNodeInfo.exitNode;
+                        // When convergence point is cleared (e.g., update node), continue from the current loop's exit node
+                        // This ensures the loop body continues building after the if statement
+                        if (headerId) {
+                            const currentLoopInfo = this.convergenceFinder.loopClassifications?.get(headerId);
+                            if (currentLoopInfo && currentLoopInfo.exitNodes && currentLoopInfo.exitNodes.length > 0) {
+                                const exitNode = currentLoopInfo.exitNodes[0];
+                                // Only add if it's in allowedIds and not already seen/visited
                                 if (allowedIds.has(exitNode) && !seenIds.has(exitNode) && !localVisited.has(exitNode)) {
-                                    console.log(`  Continuing from loop exit node ${exitNode} after if statement ${currentNodeId} (update node was convergence point)`);
-                                    queue.push({ id: exitNode, depth: depth + 1 });
-                                }
-                            }
-                        }
-                        // Also check if trueNext leads to an update node
-                        if (trueNext && !actualNextNodeId) {
-                            // Check what comes after trueNext - if it's an update node, get its exit node
-                            const trueNextNext = this.getSuccessor(trueNext, 'next');
-                            if (trueNextNext) {
-                                const trueNextUpdateInfo = this.convergenceFinder.isUpdateNode(trueNextNext);
-                                if (trueNextUpdateInfo.isUpdate && trueNextUpdateInfo.exitNode) {
-                                    const exitNode = trueNextUpdateInfo.exitNode;
-                                    if (allowedIds.has(exitNode) && !seenIds.has(exitNode) && !localVisited.has(exitNode)) {
-                                        console.log(`  Continuing from loop exit node ${exitNode} after if statement ${currentNodeId} (trueNext leads to update node)`);
+                                    // Check if exit node is already in either branch of the if statement
+                                    const inYesBranch = ifIR.thenBranch && this.isNodeInBranch(ifIR.thenBranch, exitNode);
+                                    const inNoBranch = ifIR.elseBranch && this.isNodeInBranch(ifIR.elseBranch, exitNode);
+                                    if (!inYesBranch && !inNoBranch) {
+                                        console.log(`  Continuing from current loop ${headerId} exit node ${exitNode} after if statement ${currentNodeId} (convergence point was update node)`);
                                         queue.push({ id: exitNode, depth: depth + 1 });
+                                    } else {
+                                        console.log(`  Skipping exit node ${exitNode} - already in if statement ${currentNodeId} branch`);
                                     }
-                                } else if (allowedIds.has(trueNextNext) && !seenIds.has(trueNextNext) && !localVisited.has(trueNextNext)) {
-                                    // trueNextNext is not an update node, continue from it
-                                    console.log(`  Continuing from ${trueNextNext} after if statement ${currentNodeId} (no convergence point)`);
-                                    queue.push({ id: trueNextNext, depth: depth + 1 });
                                 }
                             }
                         }
