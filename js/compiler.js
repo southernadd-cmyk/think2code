@@ -2277,24 +2277,9 @@ class ConvergenceFinder {
             // has a DIRECT back edge to the current loop header (only direct = actual update node)
             if (currentLoopHeaderId && loopHeaderId === currentLoopHeaderId) {
                 // For while loops: check if convergence point has a DIRECT back edge to header
-                // Only direct back edges indicate the actual update node (the one that loops back immediately)
-                // Indirect back edges just mean the node can eventually reach the header, which is true for most loop body nodes
-                if (loopInfo.type === 'while' && convergencePoint) {
-                    const hasDirectBackEdge = this.hasDirectBackEdgeTo(convergencePoint, currentLoopHeaderId);
-                    if (hasDirectBackEdge) {
-                        // This is the update node for the current loop
-                        if (allowedIds && allowedIds.has(convergencePoint)) {
-                            // The update node is already in the loop body, so don't treat it as a convergence point
-                            console.log(`  Convergence point ${convergencePoint} is update node in loop body, clearing convergence point`);
-                            actualConvergencePoint = null;
-                        } else {
-                            // The branch should stop here
-                            console.log(`  Convergence point ${convergencePoint} has direct back edge to current loop ${currentLoopHeaderId}, stopping (will loop back)`);
-                            shouldStop = true;
-                        }
-                        break;
-                    }
-                }
+                // For while loops, allow convergence points even if they have direct back edges
+                // They will be handled appropriately by the if statement logic
+
                 // For for-loops: check updateNodeId
                 if (loopInfo.updateNodeId === convergencePoint) {
                     // This is the update node for the current loop - it will loop back naturally
@@ -3467,8 +3452,8 @@ class EnhancedIRBuilder extends IRBuilder {
         // Build branches up to (but not including) convergence point
         // This is similar to compileNodeUntil in the old compiler
         const branchAllowedIds = allowedIds ? new Set(allowedIds) : null;
-        if (converge && branchAllowedIds) {
-            // Remove convergence point from allowed set for branches
+        if (converge && branchAllowedIds && converge !== trueNext && converge !== falseNext) {
+            // Remove convergence point from allowed set for branches, unless it's used as a branch
             branchAllowedIds.delete(converge);
         }
         
@@ -3488,14 +3473,21 @@ class EnhancedIRBuilder extends IRBuilder {
                 ifNode.thenBranch = null;
             } else
             if (converge) {
-                // Build up to convergence point (exclusive)
-                console.log(`  [BUILD IF] Building YES branch for ${nodeId}: buildNodeUntil(${trueNext}, ${converge})`);
-                ifNode.thenBranch = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                // Special case: if convergence point is the same as trueNext, build it as a regular statement
+                if (converge === trueNext) {
+                    console.log(`  [BUILD IF] Building YES branch for ${nodeId}: converge === trueNext, building as regular node`);
+                    ifNode.thenBranch = this.buildNode(trueNext, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
+                } else {
+                    // Build up to convergence point (exclusive)
+                    console.log(`  [BUILD IF] Building YES branch for ${nodeId}: buildNodeUntil(${trueNext}, ${converge})`);
+                    ifNode.thenBranch = this.buildNodeUntil(trueNext, converge, new Set(), branchAllowedIds, activeLoops, excludeNodeId);
+                }
                 
                 // Remove convergence point from branch if it was included (can happen in elif chains)
                 // This is critical: even though buildNodeUntil should stop before converge, sometimes
                 // the convergence point can still be included (e.g., when it's the direct next of a node)
-                if (ifNode.thenBranch && converge) {
+                // BUT: Skip removal if converge === trueNext (the convergence point IS the branch)
+                if (ifNode.thenBranch && converge && converge !== trueNext) {
                     const beforeRemove = this.getLastNodeIdInBranch(ifNode.thenBranch);
                     console.log(`  [BUILD IF] Before removal: last node in YES branch of ${nodeId} is ${beforeRemove}`);
                     // Also check if any node in the branch has n57 as its next (similar to elif branches)
@@ -3800,18 +3792,23 @@ class EnhancedIRBuilder extends IRBuilder {
                 if (loopHeaderId && this.flowAnalysis?.loopClassifier?.pathExists(falseNext, loopHeaderId)) {
                     ifNode.elseBranch = null;
                 } else if (converge) {
-                    // Build up to convergence point (exclusive)
-                    ifNode.elseBranch = this.buildNodeUntil(falseNext, converge, new Set(), branchAllowedIds, activeLoops);
-                    
-                    // Remove convergence point from branch if it was included (can happen in elif chains)
-                    // This is critical: even though buildNodeUntil should stop before converge, sometimes
-                    // the convergence point can still be included (e.g., when it's the direct next of a node)
-                    if (ifNode.elseBranch && converge) {
-                        const beforeRemove = this.getLastNodeIdInBranch(ifNode.elseBranch);
-                        ifNode.elseBranch = this.removeConvergenceFromBranch(ifNode.elseBranch, converge);
-                        const afterRemove = this.getLastNodeIdInBranch(ifNode.elseBranch);
-                        if (beforeRemove === converge && afterRemove !== converge) {
-                            console.log(`  Removed convergence point ${converge} from NO branch of ${nodeId}`);
+                    // Special case: if convergence point is the same as falseNext, build it as a regular statement
+                    if (converge === falseNext) {
+                        ifNode.elseBranch = this.buildNode(falseNext, new Set(), branchAllowedIds, 0, activeLoops, excludeNodeId);
+                    } else {
+                        // Build up to convergence point (exclusive)
+                        ifNode.elseBranch = this.buildNodeUntil(falseNext, converge, new Set(), branchAllowedIds, activeLoops);
+                        
+                        // Remove convergence point from branch if it was included (can happen in elif chains)
+                        // This is critical: even though buildNodeUntil should stop before converge, sometimes
+                        // the convergence point can still be included (e.g., when it's the direct next of a node)
+                        if (ifNode.elseBranch && converge) {
+                            const beforeRemove = this.getLastNodeIdInBranch(ifNode.elseBranch);
+                            ifNode.elseBranch = this.removeConvergenceFromBranch(ifNode.elseBranch, converge);
+                            const afterRemove = this.getLastNodeIdInBranch(ifNode.elseBranch);
+                            if (beforeRemove === converge && afterRemove !== converge) {
+                                console.log(`  Removed convergence point ${converge} from NO branch of ${nodeId}`);
+                            }
                         }
                     }
                     
@@ -4674,9 +4671,11 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                     // Even if shouldStop is true (update node for while loop), we still need to build it - we just won't continue after it
                     // BUT: Skip if it's an update node for a for-loop (handled by Python's range())
                     const isInAllowedSet = allowedIds.has(actualNextNodeId) || (parentAllowedIds && parentAllowedIds.has(actualNextNodeId));
-                    if (!isNestedLoopExit && actualNextNodeId && actualNextNodeId !== headerId && 
-                        isInAllowedSet && 
+                    const isUsedAsBranch = actualNextNodeId === trueNext || actualNextNodeId === falseNext;
+                    if (!isNestedLoopExit && actualNextNodeId && actualNextNodeId !== headerId &&
+                        isInAllowedSet &&
                         !seenIds.has(actualNextNodeId) && !localVisited.has(actualNextNodeId) &&
+                        !isUsedAsBranch &&
                         shouldAddToQueue(actualNextNodeId, shouldStop)) {
                         if (shouldStop) {
                             console.log(`  Adding convergence point ${actualNextNodeId} to queue after if statement ${currentNodeId} (will stop after building - update node)`);
@@ -4684,6 +4683,8 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                             console.log(`  Adding convergence point ${actualNextNodeId} to queue after if statement ${currentNodeId}`);
                         }
                         queue.push({ id: actualNextNodeId, depth: depth + 1, stopAfter: shouldStop });
+                    } else if (isUsedAsBranch) {
+                        console.log(`  Skipping convergence point ${actualNextNodeId} for if ${currentNodeId} - used as branch`);
                     } else if (!isNestedLoopExit && actualNextNodeId && !isInAllowedSet) {
                         console.warn(`  Convergence point ${actualNextNodeId} for if ${currentNodeId} is outside allowedIds and parentAllowedIds`);
                     } else if (!actualNextNodeId) {
