@@ -5286,12 +5286,21 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                         console.warn(`  No convergence point found for if statement ${currentNodeId} (trueNext=${trueNext}, falseNext=${falseNext})`);
                         // When convergence point is cleared (e.g., update node), continue from the current loop's exit node
                         // This ensures the loop body continues building after the if statement
+                        // BUT: Only do this if the exit node is actually part of the current loop's body
+                        // Check by verifying it's in the loop's bodyNodes, not just in allowedIds (which might include parent's nodes)
                         if (headerId) {
                             const currentLoopInfo = this.convergenceFinder.loopClassifications?.get(headerId);
                             if (currentLoopInfo && currentLoopInfo.exitNodes && currentLoopInfo.exitNodes.length > 0) {
                                 const exitNode = currentLoopInfo.exitNodes[0];
-                                // Only add if it's in allowedIds and not already seen/visited
-                                if (allowedIds.has(exitNode) && !seenIds.has(exitNode) && !localVisited.has(exitNode)) {
+                                
+                                // Check if exit node is actually in the current loop's body (not just in allowedIds from parent)
+                                const bodyNodesArray = currentLoopInfo.bodyNodes instanceof Set 
+                                    ? Array.from(currentLoopInfo.bodyNodes) 
+                                    : (Array.isArray(currentLoopInfo.bodyNodes) ? currentLoopInfo.bodyNodes : []);
+                                const isInLoopBody = bodyNodesArray.includes(exitNode);
+                                
+                                // Only add if it's in the loop's body and not already seen/visited
+                                if (isInLoopBody && allowedIds.has(exitNode) && !seenIds.has(exitNode) && !localVisited.has(exitNode)) {
                                     // Check if exit node is already in either branch of the if statement
                                     const inYesBranch = ifIR.thenBranch && this.isNodeInBranch(ifIR.thenBranch, exitNode);
                                     const inNoBranch = ifIR.elseBranch && this.isNodeInBranch(ifIR.elseBranch, exitNode);
@@ -5301,6 +5310,10 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                                     } else {
                                         console.log(`  Skipping exit node ${exitNode} - already in if statement ${currentNodeId} branch`);
                                     }
+                                } else if (!isInLoopBody) {
+                                    // Exit node is not in the loop's body - it's the exit of a nested loop or parent loop
+                                    // Don't add it here, it will be handled when the nested loop completes
+                                    console.log(`  Skipping exit node ${exitNode} - not in loop ${headerId} body, will be handled by nested loop exit logic`);
                                 }
                             }
                         }
