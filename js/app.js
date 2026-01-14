@@ -326,7 +326,7 @@ exportPython() {
 
     const a = document.createElement("a");
     a.href = url;
-    a.download = "flowcode_program.py";
+    a.download = "think2code.py";
     a.click();
 
     URL.revokeObjectURL(url);
@@ -1085,6 +1085,13 @@ const id = `n${this.nextId++}`;
         this.selectedNodeId = id;
         document.querySelectorAll('.node').forEach(n =>
             n.classList.toggle('selected', n.id === id));
+
+        // Deselect connection when selecting node
+        if (this.selectedConnectionIndex !== null) {
+            this.selectedConnectionIndex = null;
+            document.querySelectorAll('.connection-action-icon').forEach(icon => icon.remove());
+            this.drawConns();
+        }
 
         // Show action icons (delete and edit) for selected node
         this.showNodeActionIcons();
@@ -2337,6 +2344,5 @@ addDot(parent, cls, portType) {
         console.log(`[App] Debug mode ${this.debugMode ? 'enabled' : 'disabled'}`);
         this.updateCode(); // Recompile with new debug setting
     }
-
 
 };
