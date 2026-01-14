@@ -1172,7 +1172,20 @@ const id = `n${this.nextId++}`;
 
     confirmDelete(message, onConfirm) {
         const modalEl = document.getElementById('deleteConfirmModal');
-        const modal = new bootstrap.Modal(modalEl);
+        if (!modalEl) {
+            console.error('Delete confirmation modal not found');
+            onConfirm(); // Fallback: just confirm if modal doesn't exist
+            return;
+        }
+        
+        // Get existing modal instance or create new one
+        let modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) {
+            // Dispose of existing instance to avoid conflicts
+            modal.dispose();
+        }
+        modal = new bootstrap.Modal(modalEl);
+        
         document.getElementById('delete-confirm-message').innerText = message;
         
         const confirmBtn = document.getElementById('delete-confirm-btn');
@@ -1203,14 +1216,17 @@ const id = `n${this.nextId++}`;
         newCancelBtn.onclick = () => modal.hide();
         
         // Handle modal close via Escape or backdrop click (treat as cancel)
-        modalEl.addEventListener('hidden.bs.modal', () => {
+        const handleHidden = () => {
             if (!confirmed) {
                 handleCancel();
             }
             // Clean up
             newConfirmBtn.onclick = null;
             newCancelBtn.onclick = null;
-        }, { once: true });
+            modalEl.removeEventListener('hidden.bs.modal', handleHidden);
+        };
+        
+        modalEl.addEventListener('hidden.bs.modal', handleHidden, { once: true });
         
         modal.show();
     },
