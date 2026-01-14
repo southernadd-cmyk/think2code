@@ -1528,7 +1528,7 @@ z-index: 2;                     /* sit above shape borders/fills */
     border: 3px solid #475569; 
     border-radius: 50%; 
     position: absolute; 
-    z-index: 5; 
+    z-index: 100; 
     cursor: crosshair;
     transition: all 0.2s ease;
     box-shadow: 0 2px 4px rgba(0, 0, 0, 0.15);
@@ -1601,7 +1601,13 @@ z-index: 2;                     /* sit above shape borders/fills */
     letter-spacing: 0.5px;
 }
 
-#nodes-layer, #connections-layer {
+#nodes-layer {
+    position: relative;
+    z-index: 10;
+    transform-origin: 0 0;
+}
+
+#connections-layer {
     transform-origin: 0 0;
 }
 
