@@ -970,12 +970,121 @@ const id = `n${this.nextId++}`;
     };
     
     el.ondblclick = () => this.openEditor(node);
+
+    // Touch-friendly editor opening (long press)
+    let longPressTimer;
+    let longPressStarted = false;
+
+    el.addEventListener('pointerdown', (e) => {
+        if (e.pointerType === 'mouse') return; // Only for touch devices
+
+        longPressStarted = false;
+        longPressTimer = setTimeout(() => {
+            longPressStarted = true;
+            // Provide visual feedback for long press
+            el.classList.add('long-press-active');
+            // Vibrate if available
+            if (navigator.vibrate) {
+                navigator.vibrate(50);
+            }
+            this.openEditor(node);
+        }, 500); // 500ms long press
+    });
+
+    el.addEventListener('pointerup', (e) => {
+        if (e.pointerType === 'mouse') return;
+        clearTimeout(longPressTimer);
+        if (longPressStarted) {
+            el.classList.remove('long-press-active');
+        }
+    });
+
+    el.addEventListener('pointercancel', (e) => {
+        if (e.pointerType === 'mouse') return;
+        clearTimeout(longPressTimer);
+        el.classList.remove('long-press-active');
+    });
+
+    el.addEventListener('pointerleave', (e) => {
+        if (e.pointerType === 'mouse') return;
+        clearTimeout(longPressTimer);
+        el.classList.remove('long-press-active');
+    });
+
     this.nodesLayer.appendChild(el);
 },
     selectNode(id) {
         this.selectedNodeId = id;
-        document.querySelectorAll('.node').forEach(n => 
+        document.querySelectorAll('.node').forEach(n =>
             n.classList.toggle('selected', n.id === id));
+
+        // Show delete button for touch devices
+        this.showDeleteButtonForSelectedNode();
+    },
+
+    showDeleteButtonForSelectedNode() {
+        // Remove existing delete button
+        const existingBtn = document.querySelector('.node-delete-btn');
+        if (existingBtn) existingBtn.remove();
+
+        if (!this.selectedNodeId) return;
+
+        // Only show delete button on touch devices
+        const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+        if (!isTouchDevice) return;
+
+        const selectedNode = this.nodes.find(n => n.id === this.selectedNodeId);
+        if (!selectedNode || selectedNode.type === 'start') return;
+
+        const nodeEl = document.getElementById(this.selectedNodeId);
+        if (!nodeEl) return;
+
+        // Create delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'node-delete-btn';
+        deleteBtn.innerHTML = '🗑️';
+        deleteBtn.title = 'Delete node (touch to delete)';
+        deleteBtn.onclick = (e) => {
+            e.stopPropagation();
+            this.deleteSelectedNode();
+        };
+
+        // Position the button relative to the node
+        const rect = nodeEl.getBoundingClientRect();
+        deleteBtn.style.left = (rect.right - 22) + 'px';
+        deleteBtn.style.top = (rect.top - 22) + 'px';
+
+        document.body.appendChild(deleteBtn);
+
+        // Auto-hide after 5 seconds for touch devices
+        if ('ontouchstart' in window) {
+            setTimeout(() => {
+                if (deleteBtn.parentNode) {
+                    deleteBtn.remove();
+                }
+            }, 5000);
+        }
+    },
+
+    deleteSelectedNode() {
+        if (!this.selectedNodeId) return;
+
+        const n = this.nodes.find(x => x.id === this.selectedNodeId);
+        if (!n || n.type === 'start') return;
+
+        this.nodes = this.nodes.filter(x => x.id !== this.selectedNodeId);
+        this.connections = this.connections.filter(c =>
+            c.from !== this.selectedNodeId && c.to !== this.selectedNodeId);
+
+        document.getElementById(this.selectedNodeId)?.remove();
+
+        // Remove delete button
+        const deleteBtn = document.querySelector('.node-delete-btn');
+        if (deleteBtn) deleteBtn.remove();
+
+        this.selectedNodeId = null;
+        this.drawConns();
+        this.updateCode();
     },
 
     getPortPos(id, portType) {
@@ -1388,6 +1497,9 @@ document.addEventListener("click", (e) => {
                     c.from !== this.selectedNodeId && c.to !== this.selectedNodeId);
 
                 document.getElementById(this.selectedNodeId)?.remove();
+                // Remove delete button
+                const deleteBtn = document.querySelector('.node-delete-btn');
+                if (deleteBtn) deleteBtn.remove();
                 this.selectedNodeId = null;
                 this.drawConns();
                 this.updateCode();
@@ -1517,89 +1629,82 @@ window.onpointerup = (e) => {
         };
     
         // -------------------------------------------------
-        // Mobile/Tablet: Pointer Events "ghost drag" fallback
+        // Mobile/Tablet: Click to select, click to drop
         // (works on iOS/Android tablets/phones)
         // -------------------------------------------------
-        const makeGhost = (srcEl) => {
-            const g = srcEl.cloneNode(true);
-            g.classList.add('palette-ghost');
-            g.style.position = 'fixed';
-            g.style.left = '0px';
-            g.style.top = '0px';
-            g.style.zIndex = '999999';
-            g.style.pointerEvents = 'none';
-            g.style.opacity = '0.9';
-            g.style.transform = 'translate(-9999px, -9999px)';
-            document.body.appendChild(g);
-            return g;
+
+        let selectedPaletteItem = null;
+
+        // Clear selection when clicking on canvas or outside
+        const clearSelection = () => {
+            selectedPaletteItem = null;
+            document.querySelectorAll('.palette-item.selected').forEach(el => {
+                el.classList.remove('selected');
+            });
+            // Hide delete button
+            const deleteBtn = document.querySelector('.node-delete-btn');
+            if (deleteBtn) deleteBtn.remove();
         };
-    
-        const removeGhost = (g) => {
-            try { g?.remove(); } catch (_) {}
-        };
-    
+
+        // Clear selection when clicking outside canvas (on document)
+        document.addEventListener('pointerdown', (e) => {
+            if (e.pointerType !== 'mouse' && selectedPaletteItem && !this.canvas.contains(e.target)) {
+                clearSelection();
+            }
+        });
+
+        this.canvas.addEventListener('pointerdown', (e) => {
+            if (e.pointerType !== 'mouse' && selectedPaletteItem) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                const rect = this.canvas.getBoundingClientRect();
+                const worldX = (e.clientX - rect.left - this.viewportX) / this.viewportScale;
+                const worldY = (e.clientY - rect.top - this.viewportY) / this.viewportScale;
+
+                // Create node at click position
+                this.createNode(selectedPaletteItem, worldX, worldY);
+
+                // Clear selection
+                clearSelection();
+
+                // Close mobile palette if open
+                const palette = document.getElementById("palette");
+                if (palette && window.innerWidth <= 768) palette.classList.remove("open");
+
+                return;
+            }
+        });
+
         document.querySelectorAll('.palette-item').forEach((p) => {
-            // Important for touch: stop the browser interpreting this as scroll/zoom
-            p.style.touchAction = 'none';
-    
             p.addEventListener('pointerdown', (e) => {
                 // Let desktop mouse keep using HTML5 DnD
                 if (e.pointerType === 'mouse') return;
-    
+
                 const type = p.dataset.type;
                 if (!validTypes.includes(type)) return;
-    
+
                 e.preventDefault();
                 e.stopPropagation();
-    
-                const dims = getDims(type);
-                const ghost = makeGhost(p);
-    
-                // Capture pointer so we keep getting move/up even if finger leaves the palette element
-                try { p.setPointerCapture(e.pointerId); } catch (_) {}
-    
-                const moveGhost = (clientX, clientY) => {
-                    // Center ghost under finger
-                    const x = clientX - (dims.w / 2);
-                    const y = clientY - (dims.h / 2);
-                    ghost.style.transform = `translate(${x}px, ${y}px)`;
-                };
-    
-                moveGhost(e.clientX, e.clientY);
-    
-                const onMove = (me) => {
-                    moveGhost(me.clientX, me.clientY);
-                };
-    
-                const finish = (ue) => {
-                    p.removeEventListener('pointermove', onMove);
-                    removeGhost(ghost);
-    
-                    // Where did we drop?
-                    const target = document.elementFromPoint(ue.clientX, ue.clientY);
-                    const droppedInsideCanvas = !!(target && (this.canvas === target || this.canvas.contains(target)));
-    
-                    if (droppedInsideCanvas) {
-                        const rect = this.canvas.getBoundingClientRect();
-    
-                        // Convert SCREEN -> WORLD and center node on finger
-                        const worldX = ((ue.clientX - rect.left - this.viewportX) / this.viewportScale) - (dims.w / 2);
-                        const worldY = ((ue.clientY - rect.top  - this.viewportY) / this.viewportScale) - (dims.h / 2);
-    
-                        this.createNode(type, worldX, worldY);
-    
-                        // If mobile palette overlay is open, close it after drop
-                        const palette = document.getElementById("palette");
-                        if (palette && window.innerWidth <= 768) palette.classList.remove("open");
-                    }
-    
-                    try { p.releasePointerCapture(ue.pointerId); } catch (_) {}
-                };
-    
-                p.addEventListener('pointermove', onMove);
-                p.addEventListener('pointerup', finish, { once: true });
-                p.addEventListener('pointercancel', finish, { once: true });
-            }, { passive: false });
+
+                // Toggle selection
+                if (selectedPaletteItem === type) {
+                    // Deselect if already selected
+                    selectedPaletteItem = null;
+                    p.classList.remove('selected');
+                } else {
+                    // Select new item
+                    selectedPaletteItem = type;
+
+                    // Clear previous selection
+                    document.querySelectorAll('.palette-item.selected').forEach(el => {
+                        el.classList.remove('selected');
+                    });
+
+                    // Add selection to current item
+                    p.classList.add('selected');
+                }
+            });
         });
     },
     
