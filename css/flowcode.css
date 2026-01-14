@@ -35,7 +35,8 @@
     --highlight-color: #eed202; /* Original highlight color */
 }
 
-
+#canvas { touch-action: none; }
+.palette-item { touch-action: none; }
 
 /* --- Python preview line numbers (IDE-style) --- */
 .code-display.line-numbers {
@@ -92,6 +93,55 @@
     cursor: grabbing;
     transform: translateY(0);
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+}
+
+.palette-item.selected {
+    background-color: var(--python-blue) !important;
+    color: white !important;
+    border-color: var(--accent-secondary) !important;
+    box-shadow: 0 0 8px rgba(0, 123, 255, 0.3);
+    transform: scale(1.05);
+}
+
+/* Touch-friendly node interactions */
+.node.long-press-active {
+    animation: pulse 0.3s ease-in-out;
+}
+
+@keyframes pulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.05); }
+    100% { transform: scale(1); }
+}
+
+.node-delete-btn {
+    position: fixed;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: #dc3545;
+    color: white;
+    border: 2px solid #c82333;
+    font-size: 20px;
+    cursor: pointer;
+    z-index: 9999;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    opacity: 0.95;
+}
+
+.node-delete-btn:hover {
+    background: #c82333;
+    transform: scale(1.1);
+}
+
+.node-delete-btn:active {
+    transform: scale(0.95);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
 }
 
 .dropdown-item {
@@ -215,6 +265,18 @@
 /* Individual button spacing */
 .navbar .btn:not(.btn-group .btn) {
     margin: 0 2px;
+}
+
+/* Smaller screens: make output panel narrower, canvas wider */
+@media (max-width: 1200px) {
+    #output-panel {
+        width: 320px !important; /* Reduced from 480px to give significantly more space to canvas */
+        background: #1e293b !important; /* Make it more obvious when the rule applies */
+    }
+
+    #console, .code-display {
+        font-size: 10px !important; /* Smaller font for narrower panel */
+    }
 }
 
 /* Mobile navbar adjustments */
@@ -1007,6 +1069,30 @@ box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4);
     }
 }
 
+/* Portrait mode adjustments for better readability */
+@media (orientation: portrait) {
+    #output-panel {
+        height: 500px !important; /* Much taller to accommodate 10+ lines of code */
+    }
+
+    .code-display {
+        min-height: 280px !important; /* Ensures at least 10 lines visible (192px content + 88px padding) */
+        flex: none !important; /* Override flex behavior with fixed height */
+        font-size: 12px; /* Smaller font for code preview */
+        padding: 40px 24px 24px 24px; /* Maintain padding */
+    }
+
+    #console {
+        height: 120px !important; /* Reduced terminal height */
+        font-size: 11px; /* Smaller font to fit more content */
+    }
+
+    #varwatch {
+        height: 100px !important; /* Keep variable watch reasonable */
+        font-size: 11px; /* Smaller font for variables */
+    }
+}
+
 .dropdown-menu[data-bs-popper] {
     left:-100px!important;
 }
@@ -1509,13 +1595,14 @@ z-index: 2;                     /* sit above shape borders/fills */
 /* ========== OUTPUT PANEL, CODE, CONSOLE, VARWATCH ========== */
 
 /* 1. MAIN OUTPUT CONTAINER */
-#output-panel { 
-    width: 480px; 
-    display: flex; 
-    flex-direction: column; 
+#output-panel {
+    width: 480px;
+    display: flex;
+    flex-direction: column;
     background: #0f172a; /* Deep Slate 900 */
     border-left: 1px solid #1e293b;
     box-shadow: -10px 0 20px rgba(0,0,0,0.2);
+    z-index: 10; /* Ensure it stays above connections layer (z-index: 1) */
 }
 
 /* 2. PYTHON CODE AREA (Top Section) */
