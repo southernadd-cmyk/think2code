@@ -284,6 +284,30 @@ const FLOWCODE_CHALLENGES = [
     }
 ];
   
+  // Load completed challenges from localStorage
+  function loadCompletedChallenges() {
+      const stored = localStorage.getItem('challengesCompleted');
+      if (stored) {
+          try {
+              return new Set(JSON.parse(stored));
+          } catch (e) {
+              console.error('Error loading completed challenges:', e);
+          }
+      }
+      return new Set();
+  }
+
+  // Save completed challenges to localStorage
+  function saveCompletedChallenges(completedSet) {
+      try {
+          localStorage.setItem('challengesCompleted', JSON.stringify(Array.from(completedSet)));
+      } catch (e) {
+          console.error('Error saving completed challenges:', e);
+      }
+  }
+
+  let CHALLENGE_COMPLETED = loadCompletedChallenges();
+  let ACTIVE_CHALLENGE = null;
 
   function renderChallengeList() {
     const ul = document.getElementById("challenge-list");
@@ -292,15 +316,61 @@ const FLOWCODE_CHALLENGES = [
     FLOWCODE_CHALLENGES.forEach(ch => {
         const li = document.createElement("li");
         li.className = "list-group-item list-group-item-action";
-        li.textContent = `#${ch.id} ${ch.title}`;
+        
+        // Check if challenge is completed
+        const isCompleted = CHALLENGE_COMPLETED.has(ch.id);
+        
+        // Create container for challenge item
+        const container = document.createElement("div");
+        container.style.display = "flex";
+        container.style.alignItems = "center";
+        container.style.gap = "10px";
+        
+        // Add checkbox/checkmark
+        const checkmark = document.createElement("span");
+        if (isCompleted) {
+            checkmark.innerHTML = '<i class="fa-solid fa-check-circle text-success"></i>';
+            checkmark.style.fontSize = "1.2em";
+        } else {
+            checkmark.innerHTML = '<i class="fa-regular fa-circle" style="opacity: 0.3;"></i>';
+            checkmark.style.fontSize = "1.2em";
+        }
+        checkmark.style.cursor = "pointer";
+        checkmark.onclick = (e) => {
+            e.stopPropagation();
+            toggleChallengeCompletion(ch.id);
+        };
+        
+        // Challenge text
+        const text = document.createElement("span");
+        text.textContent = `#${ch.id} ${ch.title}`;
+        text.style.flex = "1";
+        if (isCompleted) {
+            text.style.textDecoration = "line-through";
+            text.style.opacity = "0.7";
+        }
+        
+        container.appendChild(checkmark);
+        container.appendChild(text);
+        li.appendChild(container);
         li.onclick = () => loadChallenge(ch);
         ul.appendChild(li);
     });
 }
 
-
-let ACTIVE_CHALLENGE = null;
-let CHALLENGE_COMPLETED = new Set();
+function toggleChallengeCompletion(challengeId) {
+    if (CHALLENGE_COMPLETED.has(challengeId)) {
+        CHALLENGE_COMPLETED.delete(challengeId);
+    } else {
+        CHALLENGE_COMPLETED.add(challengeId);
+    }
+    saveCompletedChallenges(CHALLENGE_COMPLETED);
+    renderChallengeList();
+    // Reload current challenge if it's the one being toggled
+    if (ACTIVE_CHALLENGE && ACTIVE_CHALLENGE.id === challengeId) {
+        loadChallenge(ACTIVE_CHALLENGE);
+    }
+}
 function markdownToHtml(text) {
     return text
         // Bold **text**
@@ -350,6 +420,16 @@ document.getElementById("btn-challenges").addEventListener("click", () => {
         `#${ACTIVE_CHALLENGE.id} — ${ACTIVE_CHALLENGE.title}`;
         document.getElementById("active-challenge-code").textContent =
         `${ACTIVE_CHALLENGE.pseudocode}`;
+    
+    // Update complete button and minimize state
+    updateActiveChallengeCompleteButton(ACTIVE_CHALLENGE.id);
+    if (isActiveChallengeMinimized) {
+        restoreActiveChallengeBanner();
+    }
+    
+    // Set up minimize and close buttons
+    setupActiveChallengeButtons();
+    
     // ★ CLOSE THE MODAL ★
     const modalEl = document.getElementById("challengesModal");
     const modal = bootstrap.Modal.getInstance(modalEl) 
@@ -357,10 +437,128 @@ document.getElementById("btn-challenges").addEventListener("click", () => {
     modal.hide();
     });
     
-    document.getElementById("dismiss-challenge").addEventListener("click", () => {
-        document.getElementById("active-challenge-banner").style.display = "none";
+
+// === Active Challenge Banner Minimize/Restore and Complete ===
+let isActiveChallengeMinimized = false;
+
+function minimizeActiveChallengeBanner() {
+    const banner = document.getElementById("active-challenge-banner");
+    if (!banner || isActiveChallengeMinimized) return;
+    
+    // Store original display state
+    const bannerContent = banner.querySelectorAll('#active-challenge-text, hr, p, pre, #active-challenge-buttons');
+    banner.dataset.originalDisplay = banner.style.display;
+    
+    // Hide content, show only header
+    bannerContent.forEach(el => {
+        if (el) el.style.display = 'none';
     });
     
+    // Update button
+    const minimizeBtn = document.getElementById('btn-minimize-active-challenge');
+    if (minimizeBtn) {
+        minimizeBtn.innerHTML = '<i class="fa-solid fa-window-restore"></i>';
+        minimizeBtn.title = 'Restore';
+    }
+    
+    banner.classList.add('active-challenge-minimized');
+    isActiveChallengeMinimized = true;
+}
+
+function restoreActiveChallengeBanner() {
+    const banner = document.getElementById("active-challenge-banner");
+    if (!banner || !isActiveChallengeMinimized) return;
+    
+    // Show all content
+    const bannerContent = banner.querySelectorAll('#active-challenge-text, hr, p, pre, #active-challenge-buttons');
+    bannerContent.forEach(el => {
+        if (el) el.style.display = '';
+    });
+    
+    // Update button
+    const minimizeBtn = document.getElementById('btn-minimize-active-challenge');
+    if (minimizeBtn) {
+        minimizeBtn.innerHTML = '<i class="fa-solid fa-window-minimize"></i>';
+        minimizeBtn.title = 'Minimize';
+    }
+    
+    banner.classList.remove('active-challenge-minimized');
+    isActiveChallengeMinimized = false;
+}
+
+function updateActiveChallengeCompleteButton(challengeId) {
+    const banner = document.getElementById("active-challenge-banner");
+    if (!banner) return;
+    
+    // Remove existing complete button if any
+    const existingBtn = document.getElementById('btn-complete-active-challenge');
+    if (existingBtn) {
+        existingBtn.remove();
+    }
+    
+    const isCompleted = CHALLENGE_COMPLETED.has(challengeId);
+    const buttonContainer = document.getElementById("active-challenge-buttons");
+    if (!buttonContainer) return;
+    
+    // Create complete button
+    const completeBtn = document.createElement("button");
+    completeBtn.id = 'btn-complete-active-challenge';
+    completeBtn.className = isCompleted 
+        ? 'btn btn-sm btn-outline-success w-100 mt-2' 
+        : 'btn btn-sm btn-success w-100 mt-2';
+    completeBtn.innerHTML = isCompleted 
+        ? '<i class="fa-solid fa-check me-1"></i>Completed'
+        : '<i class="fa-regular fa-circle me-1"></i>Mark as Complete';
+    completeBtn.onclick = (e) => {
+        e.stopPropagation();
+        toggleChallengeCompletion(challengeId);
+        updateActiveChallengeCompleteButton(challengeId);
+        // Refresh the challenge list if modal is open
+        const modal = bootstrap.Modal.getInstance(document.getElementById("challengesModal"));
+        if (modal && modal._isShown) {
+            renderChallengeList();
+        }
+    };
+    
+    buttonContainer.appendChild(completeBtn);
+}
+
+// Set up minimize and close buttons for active challenge banner
+function setupActiveChallengeButtons() {
+    const minimizeBtn = document.getElementById("btn-minimize-active-challenge");
+    const closeBtn = document.getElementById("btn-close-active-challenge");
+    
+    // Remove existing listeners by cloning buttons
+    if (minimizeBtn) {
+        const newMinBtn = minimizeBtn.cloneNode(true);
+        minimizeBtn.parentNode.replaceChild(newMinBtn, minimizeBtn);
+        newMinBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            if (isActiveChallengeMinimized) {
+                restoreActiveChallengeBanner();
+            } else {
+                minimizeActiveChallengeBanner();
+            }
+        });
+    }
+    
+    if (closeBtn) {
+        const newCloseBtn = closeBtn.cloneNode(true);
+        closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+        newCloseBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            document.getElementById("active-challenge-banner").style.display = "none";
+        });
+    }
+}
+
+// Set up buttons when DOM is ready
+if (document.readyState === 'loading') {
+    document.addEventListener("DOMContentLoaded", setupActiveChallengeButtons);
+} else {
+    setupActiveChallengeButtons();
+}
+
 // === Draggable challenge banner ===
 // === Global Draggable Challenge Banner ===
 (function () {
@@ -372,8 +570,8 @@ document.getElementById("btn-challenges").addEventListener("click", () => {
     let offsetY = 0;
 
     banner.addEventListener("mousedown", (e) => {
-        // Prevent dragging when clicking the hide button or the code block
-        if (e.target.id === "dismiss-challenge" || e.target.id === "active-challenge-code") return;
+        // Prevent dragging when clicking buttons or the code block
+        if (e.target.closest('button') || e.target.id === "active-challenge-code") return;
 
         isDragging = true;
         
