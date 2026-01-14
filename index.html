@@ -414,17 +414,25 @@
         box-shadow:0 10px 25px rgba(0,0,0,0.2); /* Stronger shadow */
         min-width: 300px;
      ">
-  <div id="banner-handle" style="cursor: move; border-bottom: 1px solid #ddd; margin-bottom: 5px; padding-bottom: 2px;">
-     <i class="fa-solid fa-grip-lines me-2"></i> Active Challenge: 
+  <div id="banner-handle" style="cursor: move; border-bottom: 1px solid #ddd; margin-bottom: 5px; padding-bottom: 2px; display: flex; justify-content: space-between; align-items: center;">
+     <span>
+       <i class="fa-solid fa-grip-lines me-2"></i> Active Challenge: 
+     </span>
+     <div style="display: flex; gap: 8px; align-items: center;">
+       <button type="button" class="btn btn-sm btn-outline-secondary" id="btn-minimize-active-challenge" title="Minimize" style="padding: 2px 6px; line-height: 1;">
+         <i class="fa-solid fa-window-minimize"></i>
+       </button>
+       <button type="button" class="btn btn-sm btn-outline-danger" id="btn-close-active-challenge" title="Close" style="padding: 2px 6px; line-height: 1;">
+         <i class="fa-solid fa-times"></i>
+       </button>
+     </div>
   </div>
   <span id="active-challenge-text"></span>
   <hr style="margin: 8px 0;"/>
   <p style="margin-bottom: 4px;">Pseudocode:</p>
   <pre id="active-challenge-code" style="max-height: 200px; overflow: auto; background: #fff; padding: 5px;"></pre>
-  <button id="dismiss-challenge"
-          class="btn btn-sm btn-outline-dark w-100 mt-2">
-    Hide Challenge Details
-  </button>
+  <div id="active-challenge-buttons">
+  </div>
 </div>
 
 
