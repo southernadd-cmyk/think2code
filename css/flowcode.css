@@ -114,34 +114,98 @@
     100% { transform: scale(1); }
 }
 
-.node-delete-btn {
-    position: fixed;
-    width: 44px;
-    height: 44px;
-    border-radius: 50%;
-    background: #dc3545;
-    color: white;
-    border: 2px solid #c82333;
-    font-size: 20px;
+/* Node Action Icons (Delete and Edit) */
+.node-action-icon {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: white;
+    color: #334155;
+    border: 2px solid #cbd5e1;
     cursor: pointer;
-    z-index: 9999;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    z-index: 200;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     transition: all 0.2s ease;
     display: flex;
     align-items: center;
     justify-content: center;
     touch-action: none;
-    opacity: 0.95;
+    pointer-events: auto;
 }
 
-.node-delete-btn:hover {
-    background: #c82333;
+.node-action-icon:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
     transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
 }
 
-.node-delete-btn:active {
+.node-action-icon:active {
     transform: scale(0.95);
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.node-action-delete {
+    border-color: #dc2626;
+}
+
+.node-action-delete:hover {
+    background: #fee2e2;
+    border-color: #dc2626;
+    color: #dc2626;
+}
+
+.node-action-edit {
+    border-color: #2563eb;
+}
+
+.node-action-edit:hover {
+    background: #dbeafe;
+    border-color: #2563eb;
+    color: #2563eb;
+}
+
+.node-action-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Connection Action Icon (same styling as node action icons) */
+.connection-action-icon {
+    position: absolute;
+    width: 28px;
+    height: 28px;
+    border-radius: 4px;
+    background: white;
+    color: #334155;
+    border: 2px solid #cbd5e1;
+    cursor: pointer;
+    z-index: 200;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    touch-action: none;
+    pointer-events: auto;
+}
+
+.connection-action-icon:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+    transform: scale(1.1);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.connection-action-icon:active {
+    transform: scale(0.95);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
+}
+
+.connection-action-icon svg {
+    width: 16px;
+    height: 16px;
 }
 
 .dropdown-item {
