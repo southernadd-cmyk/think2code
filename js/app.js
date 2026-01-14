@@ -1171,10 +1171,17 @@ const id = `n${this.nextId++}`;
     },
 
     confirmDelete(message, onConfirm) {
+        // Check if Bootstrap is available
+        if (typeof bootstrap === 'undefined' || !bootstrap.Modal) {
+            console.error('Bootstrap Modal not available');
+            // Don't auto-confirm, just return (user should see an error)
+            return;
+        }
+        
         const modalEl = document.getElementById('deleteConfirmModal');
         if (!modalEl) {
             console.error('Delete confirmation modal not found');
-            onConfirm(); // Fallback: just confirm if modal doesn't exist
+            // Don't auto-confirm, just return
             return;
         }
         
@@ -1184,12 +1191,24 @@ const id = `n${this.nextId++}`;
             // Dispose of existing instance to avoid conflicts
             modal.dispose();
         }
-        modal = new bootstrap.Modal(modalEl);
         
-        document.getElementById('delete-confirm-message').innerText = message;
+        try {
+            modal = new bootstrap.Modal(modalEl);
+        } catch (error) {
+            console.error('Error creating modal:', error);
+            return;
+        }
         
+        const messageEl = document.getElementById('delete-confirm-message');
         const confirmBtn = document.getElementById('delete-confirm-btn');
         const cancelBtn = document.getElementById('delete-cancel-btn');
+        
+        if (!messageEl || !confirmBtn || !cancelBtn) {
+            console.error('Modal elements not found');
+            return;
+        }
+        
+        messageEl.innerText = message;
         
         // Remove existing listeners by cloning buttons
         const newConfirmBtn = confirmBtn.cloneNode(true);
@@ -1228,7 +1247,11 @@ const id = `n${this.nextId++}`;
         
         modalEl.addEventListener('hidden.bs.modal', handleHidden, { once: true });
         
-        modal.show();
+        try {
+            modal.show();
+        } catch (error) {
+            console.error('Error showing modal:', error);
+        }
     },
 
     deleteSelectedNode() {
