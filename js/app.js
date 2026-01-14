@@ -783,7 +783,11 @@ window.addEventListener("resize", () => {
     log(t) { 
         const c = document.getElementById('console'); 
         const s = document.createElement('span'); 
-        s.innerText = t; 
+        s.innerText = t;
+        // Add class for "Running" or "Finished" to keep them green
+        if (t.includes('Running') || t.includes('Finished')) {
+            s.classList.add('terminal-status');
+        }
         c.appendChild(s); 
         c.scrollTop = c.scrollHeight; 
     },
@@ -1425,7 +1429,12 @@ this.cancelExecution = false;
 
 document.getElementById('run-btn').style.display = "none";
 document.getElementById('stop-btn').style.display = "inline-block";
-document.getElementById('console').innerHTML = ">>> Running...<br/>";
+const consoleEl = document.getElementById('console');
+const runningSpan = document.createElement('span');
+runningSpan.className = 'terminal-status';
+runningSpan.innerText = ">>> Running...\n";
+consoleEl.innerHTML = '';
+consoleEl.appendChild(runningSpan);
 
 // Reset watch
 this.updateVarWatch({});
