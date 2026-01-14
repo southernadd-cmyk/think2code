@@ -1850,3 +1850,269 @@ z-index: 2;                     /* sit above shape borders/fills */
 .modal-open {
     overflow: scroll;
 }
+
+/* ========== NODE TYPE-SPECIFIC MODAL STYLING ========== */
+
+/* Process Node Modal (Blue Rectangle) */
+.modal-node-process .modal-header {
+    background: linear-gradient(135deg, var(--color-process) 0%, #2563eb 100%) !important;
+    color: white;
+    border-bottom: 2px solid #2563eb;
+}
+
+.modal-node-process .modal-footer {
+    background: linear-gradient(135deg, var(--color-process) 0%, #2563eb 100%) !important;
+    border-top: 2px solid #2563eb;
+}
+
+.modal-node-process .modal-content {
+    border: 3px solid var(--color-process);
+    border-radius: 6px;
+}
+
+.modal-node-process .btn-primary {
+    background: var(--color-process);
+    border-color: var(--color-process);
+}
+
+.modal-node-process .btn-primary:hover {
+    background: #2563eb;
+    border-color: #2563eb;
+}
+
+/* Variable Node Modal (Purple Rectangle) */
+.modal-node-var .modal-header {
+    background: linear-gradient(135deg, var(--color-variable) 0%, #7c3aed 100%) !important;
+    color: white;
+    border-bottom: 2px solid #7c3aed;
+}
+
+.modal-node-var .modal-footer {
+    background: linear-gradient(135deg, var(--color-variable) 0%, #7c3aed 100%) !important;
+    border-top: 2px solid #7c3aed;
+}
+
+.modal-node-var .modal-content {
+    border: 3px solid var(--color-variable);
+    border-radius: 6px;
+}
+
+.modal-node-var .btn-primary {
+    background: var(--color-variable);
+    border-color: var(--color-variable);
+}
+
+.modal-node-var .btn-primary:hover {
+    background: #7c3aed;
+    border-color: #7c3aed;
+}
+
+/* Input Node Modal (Light Blue Parallelogram) */
+.modal-node-input .modal-header {
+    background: var(--color-input-output) !important;
+    color: white;
+    border-bottom: 2px solid var(--color-input-output);
+    transform: skewX(-2deg);
+    margin: -1px -1px 0 -1px;
+}
+
+.modal-node-input .modal-header .modal-title {
+    transform: skewX(2deg);
+}
+
+.modal-node-input .modal-footer {
+    background: var(--color-input-output) !important;
+    border-top: 2px solid var(--color-input-output);
+    transform: skewX(-2deg);
+    margin: 0 -1px -1px -1px;
+}
+
+.modal-node-input .modal-footer .btn {
+    transform: skewX(2deg);
+}
+
+.modal-node-input .modal-content {
+    border: 3px solid var(--color-input-output);
+    transform: skewX(-2deg);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.modal-node-input .modal-body {
+    transform: skewX(2deg);
+}
+
+.modal-node-input .btn-primary {
+    background: var(--color-input-output);
+    border-color: var(--color-input-output);
+}
+
+.modal-node-input .btn-primary:hover {
+    background: #2563eb;
+    border-color: #2563eb;
+}
+
+/* Output Node Modal (Light Blue Parallelogram) */
+.modal-node-output .modal-header {
+    background: var(--color-input-output) !important;
+    color: white;
+    border-bottom: 2px solid var(--color-input-output);
+    transform: skewX(-2deg);
+    margin: -1px -1px 0 -1px;
+}
+
+.modal-node-output .modal-header .modal-title {
+    transform: skewX(2deg);
+}
+
+.modal-node-output .modal-footer {
+    background: var(--color-input-output) !important;
+    border-top: 2px solid var(--color-input-output);
+    transform: skewX(-2deg);
+    margin: 0 -1px -1px -1px;
+}
+
+.modal-node-output .modal-footer .btn {
+    transform: skewX(2deg);
+}
+
+.modal-node-output .modal-content {
+    border: 3px solid var(--color-input-output);
+    transform: skewX(-2deg);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.modal-node-output .modal-body {
+    transform: skewX(2deg);
+}
+
+.modal-node-output .btn-primary {
+    background: var(--color-input-output);
+    border-color: var(--color-input-output);
+}
+
+.modal-node-output .btn-primary:hover {
+    background: #2563eb;
+    border-color: #2563eb;
+}
+
+/* Decision Node Modal (Yellow Diamond) */
+.modal-node-decision .modal-header {
+    background: var(--color-decision) !important;
+    color: white;
+    border-bottom: 3px solid #1e415e;
+    position: relative;
+    padding: 15px 20px;
+}
+
+.modal-node-decision .modal-header::before {
+    content: '';
+    position: absolute;
+    top: -10px;
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
+    width: 20px;
+    height: 20px;
+    background: var(--color-decision);
+    border: 2px solid #1e415e;
+    border-bottom: none;
+    border-right: none;
+}
+
+.modal-node-decision .modal-title {
+    color: white;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+    font-weight: 800;
+}
+
+.modal-node-decision .modal-footer {
+    background: var(--color-decision) !important;
+    border-top: 3px solid #1e415e;
+    position: relative;
+    padding: 15px 20px;
+}
+
+.modal-node-decision .modal-footer::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 50%;
+    transform: translateX(-50%) rotate(45deg);
+    width: 20px;
+    height: 20px;
+    background: var(--color-decision);
+    border: 2px solid #1e415e;
+    border-top: none;
+    border-left: none;
+}
+
+.modal-node-decision .modal-content {
+    border: 3px solid #1e415e;
+    border-radius: 8px;
+    background: white;
+}
+
+.modal-node-decision .btn-primary {
+    background: #1e415e;
+    border-color: #1e415e;
+    color: var(--color-decision);
+    font-weight: 700;
+}
+
+.modal-node-decision .btn-primary:hover {
+    background: #0f2538;
+    border-color: #0f2538;
+    color: var(--color-decision);
+}
+
+/* List Node Modal (Pink Rectangle with Accent) */
+.modal-node-list .modal-header {
+    background: linear-gradient(135deg, var(--color-list) 0%, #0891b2 100%) !important;
+    color: white;
+    border-bottom: 2px solid var(--color-list);
+    position: relative;
+    padding-left: 30px;
+}
+
+.modal-node-list .modal-header::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    background: rgba(255, 255, 255, 0.4);
+}
+
+.modal-node-list .modal-footer {
+    background: linear-gradient(135deg, var(--color-list) 0%, #0891b2 100%) !important;
+    border-top: 2px solid var(--color-list);
+    position: relative;
+    padding-left: 30px;
+}
+
+.modal-node-list .modal-footer::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 5px;
+    background: rgba(255, 255, 255, 0.4);
+}
+
+.modal-node-list .modal-content {
+    border: 3px solid var(--color-list);
+    border-radius: 6px;
+}
+
+.modal-node-list .btn-primary {
+    background: var(--color-list);
+    border-color: var(--color-list);
+}
+
+.modal-node-list .btn-primary:hover {
+    background: #0891b2;
+    border-color: #0891b2;
+}
