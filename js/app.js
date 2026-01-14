@@ -721,6 +721,14 @@ applyViewportTransform() {
 
     // force connectors to match new zoom/pan
     this.drawConns();
+    
+    // Update action icons position when viewport changes
+    if (this.selectedNodeId) {
+        this.showNodeActionIcons();
+    }
+    if (this.selectedConnectionIndex !== null) {
+        this.showConnectionActionIcon();
+    }
 }
 ,
 
@@ -835,17 +843,72 @@ window.addEventListener("resize", () => {
     selectConnection(index) {
         this.selectedConnectionIndex = this.selectedConnectionIndex === index ? null : index;
         // Deselect node when selecting connection
-        this.selectedNodeId = null;
+        if (this.selectedNodeId !== null) {
+            this.selectedNodeId = null;
+            document.querySelectorAll('.node').forEach(n => n.classList.remove('selected'));
+            document.querySelectorAll('.node-action-icon').forEach(icon => icon.remove());
+        }
         this.drawConns();
+        // Show delete icon for selected connection
+        this.showConnectionActionIcon();
     },
 
     deleteSelectedConnection() {
-        if (this.selectedConnectionIndex !== null) {
+        if (this.selectedConnectionIndex === null) return;
+
+        // Show confirmation modal
+        this.confirmDelete('Are you sure you want to delete this connection?', () => {
             this.connections.splice(this.selectedConnectionIndex, 1);
             this.selectedConnectionIndex = null;
+            // Remove connection action icon
+            document.querySelectorAll('.connection-action-icon').forEach(icon => icon.remove());
             this.drawConns();
             this.updateCode();
-        }
+        });
+    },
+
+    showConnectionActionIcon() {
+        // Remove existing connection action icons
+        document.querySelectorAll('.connection-action-icon').forEach(icon => icon.remove());
+
+        if (this.selectedConnectionIndex === null) return;
+
+        // Find the selected connection path in the SVG
+        const path = this.svgLayer.querySelector(`path[data-conn-index="${this.selectedConnectionIndex}"]`);
+        if (!path) return;
+
+        // Get the midpoint of the path
+        const pathLength = path.getTotalLength();
+        const midpoint = path.getPointAtLength(pathLength / 2);
+
+        // SVG coordinates are in screen space and match canvas coordinates
+        // since SVG layer covers the canvas (inset: 0)
+        const iconX = midpoint.x;
+        const iconY = midpoint.y;
+
+        // Create delete icon (dustbin SVG)
+        const deleteIcon = document.createElement('div');
+        deleteIcon.className = 'connection-action-icon node-action-delete';
+        deleteIcon.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                <line x1="10" y1="11" x2="10" y2="17"></line>
+                <line x1="14" y1="11" x2="14" y2="17"></line>
+            </svg>
+        `;
+        deleteIcon.title = 'Delete connection';
+        deleteIcon.onclick = (e) => {
+            e.stopPropagation();
+            this.deleteSelectedConnection();
+        };
+
+        // Position icon at midpoint of connection
+        deleteIcon.style.left = iconX + 'px';
+        deleteIcon.style.top = iconY + 'px';
+
+        this.canvas.appendChild(deleteIcon);
     },
 
     handleInput(prompt) {
@@ -950,9 +1013,10 @@ const id = `n${this.nextId++}`;
         this.addDot(el, 'out', 'next');
     }
     
-    // Dragging Logic (unchanged)
+    // Dragging Logic
     el.onpointerdown = (e) => {
         if (e.target.classList.contains('dot')) return;
+        if (e.target.closest('.node-action-icon')) return; // Don't drag when clicking icons
         this.selectNode(node.id);
         const sX = e.clientX, sY = e.clientY, iX = node.x, iY = node.y;
         const move = (me) => {
@@ -961,6 +1025,10 @@ const id = `n${this.nextId++}`;
             el.style.left = node.x + 'px'; 
             el.style.top = node.y + 'px';
             this.drawConns();
+            // Update action icons position while dragging
+            if (this.selectedNodeId === node.id) {
+                this.showNodeActionIcons();
+            }
         };
         window.addEventListener('pointermove', move);
         window.addEventListener('pointerup', () => { 
@@ -1018,52 +1086,122 @@ const id = `n${this.nextId++}`;
         document.querySelectorAll('.node').forEach(n =>
             n.classList.toggle('selected', n.id === id));
 
-        // Show delete button for touch devices
-        this.showDeleteButtonForSelectedNode();
+        // Show action icons (delete and edit) for selected node
+        this.showNodeActionIcons();
     },
 
-    showDeleteButtonForSelectedNode() {
-        // Remove existing delete button
-        const existingBtn = document.querySelector('.node-delete-btn');
-        if (existingBtn) existingBtn.remove();
+    showNodeActionIcons() {
+        // Remove existing action icons
+        document.querySelectorAll('.node-action-icon').forEach(icon => icon.remove());
 
         if (!this.selectedNodeId) return;
 
-        // Only show delete button on touch devices
-        const isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
-        if (!isTouchDevice) return;
-
         const selectedNode = this.nodes.find(n => n.id === this.selectedNodeId);
-        if (!selectedNode || selectedNode.type === 'start') return;
+        if (!selectedNode) return;
+
+        // Don't show action icons for start/end nodes (they can't be edited or deleted)
+        if (selectedNode.type === 'start' || selectedNode.type === 'end') return;
 
         const nodeEl = document.getElementById(this.selectedNodeId);
         if (!nodeEl) return;
 
-        // Create delete button
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'node-delete-btn';
-        deleteBtn.innerHTML = '🗑️';
-        deleteBtn.title = 'Delete node (touch to delete)';
-        deleteBtn.onclick = (e) => {
+        // Get node dimensions and position (accounting for viewport transform)
+        const nodeRect = nodeEl.getBoundingClientRect();
+        const canvasRect = this.canvas.getBoundingClientRect();
+        
+        // Calculate position relative to canvas
+        const iconX = nodeRect.right - canvasRect.left;
+        const iconY = nodeRect.top - canvasRect.top;
+
+        // Create delete icon (dustbin SVG)
+        const deleteIcon = document.createElement('div');
+        deleteIcon.className = 'node-action-icon node-action-delete';
+        deleteIcon.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"></path>
+                <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path>
+                <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+                <line x1="10" y1="11" x2="10" y2="17"></line>
+                <line x1="14" y1="11" x2="14" y2="17"></line>
+            </svg>
+        `;
+        deleteIcon.title = 'Delete node';
+        deleteIcon.onclick = (e) => {
             e.stopPropagation();
             this.deleteSelectedNode();
         };
 
-        // Position the button relative to the node
-        const rect = nodeEl.getBoundingClientRect();
-        deleteBtn.style.left = (rect.right - 22) + 'px';
-        deleteBtn.style.top = (rect.top - 22) + 'px';
+        // Create edit icon (italic "i" info icon SVG)
+        const editIcon = document.createElement('div');
+        editIcon.className = 'node-action-icon node-action-edit';
+        editIcon.innerHTML = `
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="10"></circle>
+                <path d="M12 16v-4"></path>
+                <path d="M12 8h.01"></path>
+            </svg>
+        `;
+        editIcon.title = 'Edit node';
+        editIcon.onclick = (e) => {
+            e.stopPropagation();
+            const node = this.nodes.find(n => n.id === this.selectedNodeId);
+            if (node) this.openEditor(node);
+        };
 
-        document.body.appendChild(deleteBtn);
+        // Position icons to the right of the node
+        deleteIcon.style.left = (iconX + 8) + 'px';
+        deleteIcon.style.top = (iconY - 8) + 'px';
+        
+        editIcon.style.left = (iconX + 8) + 'px';
+        editIcon.style.top = (iconY + 16) + 'px';
 
-        // Auto-hide after 5 seconds for touch devices
-        if ('ontouchstart' in window) {
-            setTimeout(() => {
-                if (deleteBtn.parentNode) {
-                    deleteBtn.remove();
-                }
-            }, 5000);
-        }
+        this.canvas.appendChild(deleteIcon);
+        this.canvas.appendChild(editIcon);
+    },
+
+    confirmDelete(message, onConfirm) {
+        const modalEl = document.getElementById('deleteConfirmModal');
+        const modal = new bootstrap.Modal(modalEl);
+        document.getElementById('delete-confirm-message').innerText = message;
+        
+        const confirmBtn = document.getElementById('delete-confirm-btn');
+        const cancelBtn = document.getElementById('delete-cancel-btn');
+        
+        // Remove existing listeners by cloning buttons
+        const newConfirmBtn = confirmBtn.cloneNode(true);
+        const newCancelBtn = cancelBtn.cloneNode(true);
+        confirmBtn.parentNode.replaceChild(newConfirmBtn, confirmBtn);
+        cancelBtn.parentNode.replaceChild(newCancelBtn, cancelBtn);
+        
+        let confirmed = false;
+        
+        const handleConfirm = () => {
+            confirmed = true;
+            modal.hide();
+            onConfirm();
+        };
+        
+        const handleCancel = () => {
+            // Only clean up if not already confirmed
+            if (!confirmed) {
+                // Event listeners will be cleaned up when modal is hidden
+            }
+        };
+        
+        newConfirmBtn.onclick = handleConfirm;
+        newCancelBtn.onclick = () => modal.hide();
+        
+        // Handle modal close via Escape or backdrop click (treat as cancel)
+        modalEl.addEventListener('hidden.bs.modal', () => {
+            if (!confirmed) {
+                handleCancel();
+            }
+            // Clean up
+            newConfirmBtn.onclick = null;
+            newCancelBtn.onclick = null;
+        }, { once: true });
+        
+        modal.show();
     },
 
     deleteSelectedNode() {
@@ -1072,19 +1210,21 @@ const id = `n${this.nextId++}`;
         const n = this.nodes.find(x => x.id === this.selectedNodeId);
         if (!n || n.type === 'start') return;
 
-        this.nodes = this.nodes.filter(x => x.id !== this.selectedNodeId);
-        this.connections = this.connections.filter(c =>
-            c.from !== this.selectedNodeId && c.to !== this.selectedNodeId);
+        // Show confirmation modal
+        this.confirmDelete('Are you sure you want to delete this node?', () => {
+            this.nodes = this.nodes.filter(x => x.id !== this.selectedNodeId);
+            this.connections = this.connections.filter(c =>
+                c.from !== this.selectedNodeId && c.to !== this.selectedNodeId);
 
-        document.getElementById(this.selectedNodeId)?.remove();
+            document.getElementById(this.selectedNodeId)?.remove();
 
-        // Remove delete button
-        const deleteBtn = document.querySelector('.node-delete-btn');
-        if (deleteBtn) deleteBtn.remove();
+            // Remove action icons
+            document.querySelectorAll('.node-action-icon').forEach(icon => icon.remove());
 
-        this.selectedNodeId = null;
-        this.drawConns();
-        this.updateCode();
+            this.selectedNodeId = null;
+            this.drawConns();
+            this.updateCode();
+        });
     },
 
     getPortPos(id, portType) {
@@ -1321,6 +1461,11 @@ try {
     ) {
         return;
     }
+    
+    // Error occurred - stop execution and reset UI
+    this.isRunning = false;
+    this.cancelExecution = false;
+    
     let pyLine = null;
 
     if (e.traceback && e.traceback.length > 0) {
@@ -1333,18 +1478,23 @@ try {
             pyLine
         );
 
-this.log(
-    "Error on line " + userLine + "\n" +
-    (e.tp$name || "Error") + ": " + e.message
-);
-
-        return;
+        this.log(
+            "Error on line " + userLine + "\n" +
+            (e.tp$name || "Error") + ": " + e.message
+        );
+    } else {
+        this.log(e.toString());
     }
-
-    this.log(e.toString());
+    
+    // Reset UI after logging error
+    document.querySelectorAll('.node').forEach(n => n.classList.remove('running'));
+    document.getElementById('run-btn').style.display = "inline-block";
+    document.getElementById('stop-btn').style.display = "none";
+    
+    return;
 }
 
-
+// Success case - reset UI normally
 this.isRunning = false;
 document.querySelectorAll('.node').forEach(n => n.classList.remove('running'));
 document.getElementById('run-btn').style.display = "inline-block";
@@ -1383,12 +1533,23 @@ this.canvas.addEventListener("pointerdown", (e) => {
             // Let the dot's handler deal with it
             return;
         }
+        // Don't deselect if clicking on action icons
+        if (e.target.closest('.node-action-icon')) {
+            return;
+        }
     // only pan if clicking empty canvas background
     if (e.target.id === "canvas" || e.target.id === "connections-layer") {
         // Deselect connection if clicking on empty space
         if (this.selectedConnectionIndex !== null) {
             this.selectedConnectionIndex = null;
+            document.querySelectorAll('.connection-action-icon').forEach(icon => icon.remove());
             this.drawConns();
+        }
+        // Deselect node and remove action icons
+        if (this.selectedNodeId !== null) {
+            this.selectedNodeId = null;
+            document.querySelectorAll('.node').forEach(n => n.classList.remove('selected'));
+            document.querySelectorAll('.node-action-icon').forEach(icon => icon.remove());
         }
         isPanning = true;
         panStartX = e.clientX - this.viewportX;
@@ -1489,29 +1650,19 @@ document.addEventListener("click", (e) => {
             // Delete selected nodes
             if ((e.key === "Delete" || e.key === "Backspace") && this.selectedNodeId) {
                 if (document.activeElement.tagName === "INPUT") return;
-                const n = this.nodes.find(x => x.id === this.selectedNodeId);
-                if(n?.type === 'start') return;
-
-                this.nodes = this.nodes.filter(x => x.id !== this.selectedNodeId);
-                this.connections = this.connections.filter(c =>
-                    c.from !== this.selectedNodeId && c.to !== this.selectedNodeId);
-
-                document.getElementById(this.selectedNodeId)?.remove();
-                // Remove delete button
-                const deleteBtn = document.querySelector('.node-delete-btn');
-                if (deleteBtn) deleteBtn.remove();
-                this.selectedNodeId = null;
-                this.drawConns();
-                this.updateCode();
+                // Use the deleteSelectedNode function which now includes confirmation
+                this.deleteSelectedNode();
             }
             // Delete selected connections
             else if (e.key === "Delete" && this.selectedConnectionIndex !== null) {
                 if (document.activeElement.tagName === "INPUT") return;
+                // Use the deleteSelectedConnection function which now includes confirmation
                 this.deleteSelectedConnection();
             }
             // Deselect connection when pressing Escape
             else if (e.key === "Escape" && this.selectedConnectionIndex !== null) {
                 this.selectedConnectionIndex = null;
+                document.querySelectorAll('.connection-action-icon').forEach(icon => icon.remove());
                 this.drawConns();
             }
         };
@@ -1641,9 +1792,8 @@ window.onpointerup = (e) => {
             document.querySelectorAll('.palette-item.selected').forEach(el => {
                 el.classList.remove('selected');
             });
-            // Hide delete button
-            const deleteBtn = document.querySelector('.node-delete-btn');
-            if (deleteBtn) deleteBtn.remove();
+            // Hide action icons
+            document.querySelectorAll('.node-action-icon').forEach(icon => icon.remove());
         };
 
         // Clear selection when clicking outside canvas (on document)
