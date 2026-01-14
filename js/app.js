@@ -1159,12 +1159,13 @@ const id = `n${this.nextId++}`;
             if (node) this.openEditor(node);
         };
 
-        // Position icons to the right of the node
+        // Position icons to the right of the node with proper spacing
+        // Icons are 28px tall, so space them 36px apart to avoid overlap
         deleteIcon.style.left = (iconX + 8) + 'px';
         deleteIcon.style.top = (iconY - 8) + 'px';
         
         editIcon.style.left = (iconX + 8) + 'px';
-        editIcon.style.top = (iconY + 16) + 'px';
+        editIcon.style.top = (iconY + 28) + 'px'; // 28px (icon height) + 8px gap = 36px spacing
 
         this.canvas.appendChild(deleteIcon);
         this.canvas.appendChild(editIcon);
@@ -1180,7 +1181,17 @@ const id = `n${this.nextId++}`;
         
         // Wait for DOM to be ready if needed
         const getModal = () => {
-            return document.getElementById('deleteConfirmModal');
+            // Try multiple methods to find the modal
+            let modalEl = document.getElementById('deleteConfirmModal');
+            if (!modalEl) {
+                // Try querySelector as alternative
+                modalEl = document.querySelector('#deleteConfirmModal');
+            }
+            if (!modalEl) {
+                // Try finding by class
+                modalEl = document.querySelector('.modal#deleteConfirmModal');
+            }
+            return modalEl;
         };
         
         const tryShowModal = () => {
@@ -1202,6 +1213,10 @@ const id = `n${this.nextId++}`;
             document.addEventListener('DOMContentLoaded', () => {
                 if (!tryShowModal()) {
                     console.error('Delete confirmation modal not found after DOMContentLoaded');
+                    // Fallback to browser confirm dialog
+                    if (confirm(message)) {
+                        onConfirm();
+                    }
                 }
             });
             return;
@@ -1212,6 +1227,8 @@ const id = `n${this.nextId++}`;
         setTimeout(() => {
             if (!tryShowModal()) {
                 console.error('Delete confirmation modal still not found after retry');
+                console.log('Available modals:', document.querySelectorAll('.modal').length);
+                console.log('Document body:', document.body ? 'exists' : 'missing');
                 // Fallback to browser confirm dialog
                 if (confirm(message)) {
                     onConfirm();
