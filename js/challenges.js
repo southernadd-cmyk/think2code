@@ -421,6 +421,22 @@ document.getElementById("btn-challenges").addEventListener("click", () => {
         document.getElementById("active-challenge-code").textContent =
         `${ACTIVE_CHALLENGE.pseudocode}`;
     
+    // Reset to pseudocode tab
+    const pseudocodeTab = document.getElementById('pseudocode-tab');
+    const testTab = document.getElementById('test-tab');
+    if (pseudocodeTab && testTab) {
+        pseudocodeTab.classList.add('active');
+        testTab.classList.remove('active');
+        document.getElementById('pseudocode-pane').classList.add('show', 'active');
+        document.getElementById('test-pane').classList.remove('show', 'active');
+    }
+    
+    // Hide test results
+    const testResults = document.getElementById('active-challenge-test-results');
+    if (testResults) {
+        testResults.style.display = 'none';
+    }
+    
     // Update complete button and minimize state
     updateActiveChallengeCompleteButton(ACTIVE_CHALLENGE.id);
     if (isActiveChallengeMinimized) {
@@ -446,7 +462,7 @@ function minimizeActiveChallengeBanner() {
     if (!banner || isActiveChallengeMinimized) return;
     
     // Store original display state
-    const bannerContent = banner.querySelectorAll('#active-challenge-text, hr, p, pre, #active-challenge-buttons');
+    const bannerContent = banner.querySelectorAll('#active-challenge-text, #active-challenge-tabs, #active-challenge-tab-content');
     banner.dataset.originalDisplay = banner.style.display;
     
     // Hide content, show only header
@@ -470,7 +486,7 @@ function restoreActiveChallengeBanner() {
     if (!banner || !isActiveChallengeMinimized) return;
     
     // Show all content
-    const bannerContent = banner.querySelectorAll('#active-challenge-text, hr, p, pre, #active-challenge-buttons');
+    const bannerContent = banner.querySelectorAll('#active-challenge-text, #active-challenge-tabs, #active-challenge-tab-content');
     bannerContent.forEach(el => {
         if (el) el.style.display = '';
     });
@@ -490,27 +506,54 @@ function updateActiveChallengeCompleteButton(challengeId) {
     const banner = document.getElementById("active-challenge-banner");
     if (!banner) return;
     
-    // Remove existing complete button if any
-    const existingBtn = document.getElementById('btn-complete-active-challenge');
-    if (existingBtn) {
-        existingBtn.remove();
-    }
+    // Remove existing buttons if any
+    const existingCompleteBtn = document.getElementById('btn-complete-active-challenge');
+    if (existingCompleteBtn) existingCompleteBtn.remove();
+    const existingSubmitBtn = document.getElementById('btn-submit-challenge');
+    if (existingSubmitBtn) existingSubmitBtn.remove();
     
     const isCompleted = CHALLENGE_COMPLETED.has(challengeId);
     const buttonContainer = document.getElementById("active-challenge-buttons");
     if (!buttonContainer) return;
+    
+    // Create submit button (only if not completed)
+    if (!isCompleted) {
+        const submitBtn = document.createElement("button");
+        submitBtn.id = 'btn-submit-challenge';
+        submitBtn.className = 'btn btn-sm btn-primary w-100 mt-2';
+        submitBtn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i>Submit Solution';
+        submitBtn.onclick = (e) => {
+            e.stopPropagation();
+            submitChallengeSolution(challengeId);
+        };
+        buttonContainer.appendChild(submitBtn);
+    }
     
     // Create complete button
     const completeBtn = document.createElement("button");
     completeBtn.id = 'btn-complete-active-challenge';
     completeBtn.className = isCompleted 
         ? 'btn btn-sm btn-outline-success w-100 mt-2' 
-        : 'btn btn-sm btn-success w-100 mt-2';
+        : 'btn btn-sm btn-outline-success w-100 mt-2';
     completeBtn.innerHTML = isCompleted 
         ? '<i class="fa-solid fa-check me-1"></i>Completed'
         : '<i class="fa-regular fa-circle me-1"></i>Mark as Complete';
     completeBtn.onclick = (e) => {
         e.stopPropagation();
+        
+        // If already completed, close banner and open challenge selection modal
+        if (isCompleted) {
+            // Close the active challenge banner
+            document.getElementById("active-challenge-banner").style.display = "none";
+            
+            // Open the challenge selection modal
+            const modal = new bootstrap.Modal(document.getElementById("challengesModal"));
+            modal.show();
+            renderChallengeList();
+            return;
+        }
+        
+        // Otherwise, toggle completion
         toggleChallengeCompletion(challengeId);
         updateActiveChallengeCompleteButton(challengeId);
         // Refresh the challenge list if modal is open
@@ -643,6 +686,596 @@ if (document.readyState === 'loading') {
             }, 400);
         };
     });
+
+// ========== CHALLENGE TESTING SYSTEM ==========
+
+/**
+ * Parse challenge examples to understand input/output format
+ */
+function parseChallengeExamples(challenge) {
+    const examples = [];
+    const task = challenge.task;
+    
+    // Look for example patterns: :Input, :Inputs, :Output
+    const exampleRegex = /Example \d+[\s\S]*?(?=Example \d+|$)/g;
+    const matches = task.match(exampleRegex);
+    
+    if (!matches) return null;
+    
+    matches.forEach(match => {
+        const example = {};
+        
+        // Extract inputs (can be :Input or :Inputs)
+        const inputMatch = match.match(/:Inputs?\s*\n`([^`]+)`/);
+        if (inputMatch) {
+            // Single input
+            example.inputs = [inputMatch[1].trim()];
+        } else {
+            // Multiple inputs
+            const inputsMatch = match.match(/:Inputs\s*\n((?:`[^`]+`\s*\n?)+)/);
+            if (inputsMatch) {
+                const inputsText = inputsMatch[1];
+                example.inputs = inputsText.match(/`([^`]+)`/g).map(i => i.replace(/`/g, '').trim());
+            }
+        }
+        
+        // Extract output
+        const outputMatch = match.match(/:Output\s*\n`([^`]+)`/);
+        if (outputMatch) {
+            example.output = outputMatch[1].trim();
+        } else {
+            // Multi-line output
+            const outputMatch2 = match.match(/:Output\s*\n```\s*\n([\s\S]+?)\n```/);
+            if (outputMatch2) {
+                example.output = outputMatch2[1].trim();
+            }
+        }
+        
+        if (example.inputs && example.output) {
+            examples.push(example);
+        }
+    });
+    
+    return examples.length > 0 ? examples : null;
+}
+
+/**
+ * Hardcoded test cases for each challenge
+ */
+const CHALLENGE_TEST_CASES = {
+    1: [ // Print Shop
+        { inputs: ['5'], expectedOutput: '15' },
+        { inputs: ['12'], expectedOutput: '36' },
+        { inputs: ['8'], expectedOutput: '24' },
+        { inputs: ['20'], expectedOutput: '60' },
+        { inputs: ['1'], expectedOutput: '3' }
+    ],
+    2: [ // Helpdesk Ticket
+        { inputs: ['Sarah', 'laptop', 'screen flickering'], expectedOutput: 'Ticket created for Sarah with laptop fault: screen flickering' },
+        { inputs: ['Tom', 'printer', 'paper jam'], expectedOutput: 'Ticket created for Tom with printer fault: paper jam' },
+        { inputs: ['Alice', 'mouse', 'not working'], expectedOutput: 'Ticket created for Alice with mouse fault: not working' },
+        { inputs: ['Bob', 'keyboard', 'sticky keys'], expectedOutput: 'Ticket created for Bob with keyboard fault: sticky keys' },
+        { inputs: ['Emma', 'monitor', 'no display'], expectedOutput: 'Ticket created for Emma with monitor fault: no display' }
+    ],
+    3: [ // Photocopy Billing
+        { inputs: ['100', '20'], expectedOutput: '7.40' },
+        { inputs: ['50', '10'], expectedOutput: '3.70' },
+        { inputs: ['200', '50'], expectedOutput: '16.00' },
+        { inputs: ['75', '15'], expectedOutput: '5.55' },
+        { inputs: ['150', '30'], expectedOutput: '11.10' }
+    ],
+    4: [ // Minutes to Seconds
+        { inputs: ['5'], expectedOutput: '300' },
+        { inputs: ['12'], expectedOutput: '720' },
+        { inputs: ['10'], expectedOutput: '600' },
+        { inputs: ['3'], expectedOutput: '180' },
+        { inputs: ['15'], expectedOutput: '900' }
+    ],
+    5: [ // Simple Pay Calculator
+        { inputs: ['40', '12.50'], expectedOutput: '500.00' },
+        { inputs: ['15', '10.00'], expectedOutput: '150.00' },
+        { inputs: ['20', '15.75'], expectedOutput: '315.00' },
+        { inputs: ['35', '11.00'], expectedOutput: '385.00' },
+        { inputs: ['25', '9.50'], expectedOutput: '237.50' }
+    ],
+    6: [ // Apprenticeship Eligibility
+        { inputs: ['17'], expectedOutput: 'Eligible' },
+        { inputs: ['15'], expectedOutput: 'Not eligible' },
+        { inputs: ['16'], expectedOutput: 'Eligible' },
+        { inputs: ['20'], expectedOutput: 'Eligible' },
+        { inputs: ['14'], expectedOutput: 'Not eligible' }
+    ],
+    7: [ // Password Length Check
+        { inputs: ['6'], expectedOutput: 'Too weak' },
+        { inputs: ['10'], expectedOutput: 'OK' },
+        { inputs: ['8'], expectedOutput: 'OK' },
+        { inputs: ['5'], expectedOutput: 'Too weak' },
+        { inputs: ['12'], expectedOutput: 'OK' }
+    ],
+    8: [ // Mobile Usage Discount
+        { inputs: ['650'], expectedOutput: 'Apply discount' },
+        { inputs: ['300'], expectedOutput: 'No discount' },
+        { inputs: ['500'], expectedOutput: 'No discount' },
+        { inputs: ['600'], expectedOutput: 'Apply discount' },
+        { inputs: ['400'], expectedOutput: 'No discount' }
+    ],
+    9: [ // Exam Grade
+        { inputs: ['65'], expectedOutput: 'Pass' },
+        { inputs: ['42'], expectedOutput: 'Fail' },
+        { inputs: ['50'], expectedOutput: 'Pass' },
+        { inputs: ['75'], expectedOutput: 'Pass' },
+        { inputs: ['45'], expectedOutput: 'Fail' }
+    ],
+    10: [ // IT Shop Delivery Charge
+        { inputs: ['35.00'], expectedOutput: '39.99' },
+        { inputs: ['75.00'], expectedOutput: '75.00' },
+        { inputs: ['49.99'], expectedOutput: '54.98' },
+        { inputs: ['50.00'], expectedOutput: '50.00' },
+        { inputs: ['25.50'], expectedOutput: '30.49' }
+    ],
+    11: [ // Invoice Number Printing
+        { inputs: ['5'], expectedOutput: '1\n2\n3\n4\n5' },
+        { inputs: ['3'], expectedOutput: '1\n2\n3' },
+        { inputs: ['7'], expectedOutput: '1\n2\n3\n4\n5\n6\n7' },
+        { inputs: ['4'], expectedOutput: '1\n2\n3\n4' },
+        { inputs: ['10'], expectedOutput: '1\n2\n3\n4\n5\n6\n7\n8\n9\n10' }
+    ],
+    12: [ // Sticker Printer
+        { inputs: ['4'], expectedOutput: 'Sticker printed\nSticker printed\nSticker printed\nSticker printed' },
+        { inputs: ['2'], expectedOutput: 'Sticker printed\nSticker printed' },
+        { inputs: ['3'], expectedOutput: 'Sticker printed\nSticker printed\nSticker printed' },
+        { inputs: ['5'], expectedOutput: 'Sticker printed\nSticker printed\nSticker printed\nSticker printed\nSticker printed' },
+        { inputs: ['1'], expectedOutput: 'Sticker printed' }
+    ],
+    13: [ // Times Table Maker
+        { inputs: ['7'], expectedOutput: '7\n14\n21\n28\n35\n42\n49\n56\n63\n70' },
+        { inputs: ['3'], expectedOutput: '3\n6\n9\n12\n15\n18\n21\n24\n27\n30' },
+        { inputs: ['5'], expectedOutput: '5\n10\n15\n20\n25\n30\n35\n40\n45\n50' },
+        { inputs: ['4'], expectedOutput: '4\n8\n12\n16\n20\n24\n28\n32\n36\n40' },
+        { inputs: ['6'], expectedOutput: '6\n12\n18\n24\n30\n36\n42\n48\n54\n60' }
+    ],
+    14: [ // Sum of First N Numbers
+        { inputs: ['5'], expectedOutput: '15' },
+        { inputs: ['10'], expectedOutput: '55' },
+        { inputs: ['3'], expectedOutput: '6' },
+        { inputs: ['7'], expectedOutput: '28' },
+        { inputs: ['12'], expectedOutput: '78' }
+    ],
+    15: [ // Days Worked Hours Total
+        { inputs: ['3', '8', '6', '7'], expectedOutput: '21' },
+        { inputs: ['4', '5', '8', '6', '7'], expectedOutput: '26' },
+        { inputs: ['2', '8', '8'], expectedOutput: '16' },
+        { inputs: ['5', '7', '6', '8', '5', '6'], expectedOutput: '32' },
+        { inputs: ['3', '9', '7', '8'], expectedOutput: '24' }
+    ],
+    16: [ // Website Uptime Monitor
+        { inputs: ['150', '210', '180', '250', '190', '220', '160', '205', '170', '240'], expectedOutput: '5' },
+        { inputs: ['100', '150', '180', '120', '190', '160', '140', '170', '130', '110'], expectedOutput: '0' },
+        { inputs: ['200', '201', '199', '200', '200', '201', '199', '200', '200', '201'], expectedOutput: '0' },
+        { inputs: ['250', '300', '220', '280', '210', '260', '230', '270', '240', '290'], expectedOutput: '10' },
+        { inputs: ['150', '180', '190', '160', '170', '200', '210', '195', '185', '175'], expectedOutput: '2' }
+    ],
+    17: [ // Password Retry Until Correct
+        { inputs: ['hello', 'password123', 'letmein'], expectedOutput: 'Access granted' },
+        { inputs: ['letmein'], expectedOutput: 'Access granted' },
+        { inputs: ['wrong', 'also wrong', 'still wrong', 'letmein'], expectedOutput: 'Access granted' },
+        { inputs: ['test', 'letmein'], expectedOutput: 'Access granted' },
+        { inputs: ['123', '456', '789', 'letmein'], expectedOutput: 'Access granted' }
+    ],
+    18: [ // Loyalty Card Stamp Counter
+        { inputs: ['yes', 'yes', 'yes', 'no'], expectedOutput: '3' },
+        { inputs: ['no'], expectedOutput: '0' },
+        { inputs: ['yes', 'yes', 'stop'], expectedOutput: '2' },
+        { inputs: ['yes', 'yes', 'yes', 'yes', 'no'], expectedOutput: '4' },
+        { inputs: ['yes', 'no'], expectedOutput: '1' }
+    ],
+    19: [ // Even Number Finder
+        { inputs: ['10'], expectedOutput: '2\n4\n6\n8\n10' },
+        { inputs: ['7'], expectedOutput: '2\n4\n6' },
+        { inputs: ['15'], expectedOutput: '2\n4\n6\n8\n10\n12\n14' },
+        { inputs: ['5'], expectedOutput: '2\n4' },
+        { inputs: ['20'], expectedOutput: '2\n4\n6\n8\n10\n12\n14\n16\n18\n20' }
+    ],
+    20: [ // Guess the Secret Number
+        { inputs: ['5', '9', '7'], expectedOutput: 'Correct' },
+        { inputs: ['7'], expectedOutput: 'Correct' },
+        { inputs: ['1', '2', '3', '4', '5', '6', '7'], expectedOutput: 'Correct' },
+        { inputs: ['10', '7'], expectedOutput: 'Correct' },
+        { inputs: ['8', '6', '7'], expectedOutput: 'Correct' }
+    ],
+    21: [ // Store Student Marks
+        { inputs: ['67', '82', '54', '91', '73'], expectedOutput: '[67, 82, 54, 91, 73]' },
+        { inputs: ['45', '56', '78', '89', '65'], expectedOutput: '[45, 56, 78, 89, 65]' },
+        { inputs: ['90', '85', '95', '88', '92'], expectedOutput: '[90, 85, 95, 88, 92]' },
+        { inputs: ['50', '60', '70', '80', '90'], expectedOutput: '[50, 60, 70, 80, 90]' },
+        { inputs: ['100', '95', '98', '99', '97'], expectedOutput: '[100, 95, 98, 99, 97]' }
+    ],
+    22: [ // Average of Marks
+        { inputs: ['60', '70', '80', '90', '50'], expectedOutput: '70' },
+        { inputs: ['55', '65', '75', '85', '95'], expectedOutput: '75' },
+        { inputs: ['50', '60', '70', '80', '90'], expectedOutput: '70' },
+        { inputs: ['100', '90', '80', '70', '60'], expectedOutput: '80' },
+        { inputs: ['45', '55', '65', '75', '85'], expectedOutput: '65' }
+    ],
+    23: [ // Highest Priority Job
+        { inputs: ['5', '3', '7', '2', '9', '4'], expectedOutput: '9' },
+        { inputs: ['3', '5', '5', '5'], expectedOutput: '5' },
+        { inputs: ['4', '8', '1', '6', '3'], expectedOutput: '8' },
+        { inputs: ['10', '5', '15', '20', '12'], expectedOutput: '20' },
+        { inputs: ['7', '7', '7'], expectedOutput: '7' }
+    ],
+    24: [ // Network Latency Average
+        { inputs: ['20', '25', '30', '15', '35'], expectedOutput: '25' },
+        { inputs: ['50', '50', '50', '50', '50'], expectedOutput: '50' },
+        { inputs: ['10', '20', '30', '40', '50'], expectedOutput: '30' },
+        { inputs: ['15', '25', '35', '45', '55'], expectedOutput: '35' },
+        { inputs: ['5', '10', '15', '20', '25'], expectedOutput: '15' }
+    ],
+    25: [ // Count Failed Login Attempts
+        { inputs: ['PASS', 'FAIL', 'PASS', 'FAIL', 'FAIL'], expectedOutput: '3' },
+        { inputs: ['PASS', 'PASS', 'PASS', 'PASS', 'PASS'], expectedOutput: '0' },
+        { inputs: ['FAIL', 'FAIL', 'FAIL', 'FAIL', 'FAIL'], expectedOutput: '5' },
+        { inputs: ['PASS', 'FAIL', 'PASS', 'PASS', 'FAIL'], expectedOutput: '2' },
+        { inputs: ['FAIL', 'PASS', 'FAIL', 'PASS', 'FAIL'], expectedOutput: '3' }
+    ],
+    26: [ // Cyber Login Lockout
+        { inputs: ['1111', '2222', '1234'], expectedOutput: 'Success' },
+        { inputs: ['5555', '9999', '0000'], expectedOutput: 'Locked' },
+        { inputs: ['1234'], expectedOutput: 'Success' },
+        { inputs: ['1111', '1234'], expectedOutput: 'Success' },
+        { inputs: ['0000', '1111', '2222'], expectedOutput: 'Locked' }
+    ],
+    27: [ // USB Order Discount System
+        { inputs: ['5'], expectedOutput: '30.00' },
+        { inputs: ['15'], expectedOutput: '81.00' },
+        { inputs: ['25'], expectedOutput: '120.00' },
+        { inputs: ['10'], expectedOutput: '54.00' },
+        { inputs: ['20'], expectedOutput: '96.00' }
+    ],
+    28: [ // Network Cable Cutter
+        { inputs: ['20'], expectedOutput: '6\n2' },
+        { inputs: ['15'], expectedOutput: '5\n0' },
+        { inputs: ['8'], expectedOutput: '2\n2' },
+        { inputs: ['12'], expectedOutput: '4\n0' },
+        { inputs: ['10'], expectedOutput: '3\n1' }
+    ],
+    29: [ // Backup Storage Filler
+        { inputs: ['300', '400', '350'], expectedOutput: '1050\n3' },
+        { inputs: ['200', '200', '200', '200', '200'], expectedOutput: '1000\n5' },
+        { inputs: ['500', '400', '300'], expectedOutput: '1200\n3' },
+        { inputs: ['250', '250', '250', '250'], expectedOutput: '1000\n4' },
+        { inputs: ['600', '500'], expectedOutput: '1100\n2' }
+    ],
+    30: [ // Project Task Burndown
+        { inputs: ['20', '5', '7', '8'], expectedOutput: '3' },
+        { inputs: ['15', '10', '5'], expectedOutput: '2' },
+        { inputs: ['30', '10', '10', '10'], expectedOutput: '3' },
+        { inputs: ['25', '5', '5', '5', '5', '5'], expectedOutput: '5' },
+        { inputs: ['12', '6', '6'], expectedOutput: '2' }
+    ]
+};
+
+/**
+ * Get test cases for a challenge (returns 3 random ones from the hardcoded set)
+ */
+function generateTestCases(challenge, count = 3) {
+    const testCases = CHALLENGE_TEST_CASES[challenge.id];
+    if (!testCases || testCases.length === 0) {
+        return null;
+    }
+    
+    // Return 3 random test cases from the available ones
+    const shuffled = [...testCases].sort(() => 0.5 - Math.random());
+    return shuffled.slice(0, Math.min(count, shuffled.length));
+}
+
+/**
+ * Calculate expected output based on pseudocode and inputs
+ */
+function calculateExpectedOutput(challenge, inputs) {
+    try {
+        const pseudocode = challenge.pseudocode;
+        const vars = {};
+        let inputIndex = 0;
+        
+        // Parse pseudocode line by line
+        const lines = pseudocode.split('\n');
+        for (const line of lines) {
+            const trimmed = line.trim();
+            
+            // INPUT statement
+            if (trimmed.startsWith('INPUT ')) {
+                const varName = trimmed.substring(6).trim();
+                if (inputIndex < inputs.length) {
+                    const value = inputs[inputIndex++];
+                    const numValue = parseFloat(value);
+                    vars[varName] = isNaN(numValue) ? value : numValue;
+                }
+            }
+            // SET statement
+            else if (trimmed.startsWith('SET ')) {
+                const rest = trimmed.substring(4).trim();
+                const [varName, expr] = rest.split('=').map(s => s.trim());
+                if (expr) {
+                    vars[varName] = evaluateExpression(expr, vars);
+                }
+            }
+            // OUTPUT statement
+            else if (trimmed.startsWith('OUTPUT ')) {
+                const expr = trimmed.substring(7).trim();
+                if (expr.startsWith('"') && expr.endsWith('"')) {
+                    // String literal
+                    return expr.slice(1, -1);
+                } else {
+                    // Expression
+                    const result = evaluateExpression(expr, vars);
+                    // Format numbers to 2 decimal places if needed
+                    if (typeof result === 'number') {
+                        // Check if challenge mentions decimal places
+                        if (challenge.task.includes('two decimal places') || challenge.task.includes('2 decimal')) {
+                            return result.toFixed(2);
+                        }
+                        // Check if result is whole number
+                        if (result % 1 === 0) {
+                            return result.toString();
+                        }
+                        return result.toFixed(2);
+                    }
+                    return result.toString();
+                }
+            }
+        }
+        
+        return null;
+    } catch (e) {
+        console.error('Error calculating expected output:', e);
+        return null;
+    }
+}
+
+/**
+ * Evaluate a simple expression with variables
+ */
+function evaluateExpression(expr, vars) {
+    // Replace variable names with their values
+    let result = expr;
+    for (const [varName, value] of Object.entries(vars)) {
+        const regex = new RegExp(`\\b${varName}\\b`, 'g');
+        result = result.replace(regex, typeof value === 'string' ? `"${value}"` : value);
+    }
+    
+    // Handle string concatenation
+    if (result.includes('+') && result.includes('"')) {
+        // String concatenation
+        const parts = result.split('+').map(p => p.trim());
+        return parts.map(p => {
+            if (p.startsWith('"') && p.endsWith('"')) {
+                return p.slice(1, -1);
+            } else {
+                return vars[p] || p;
+            }
+        }).join('');
+    }
+    
+    // Evaluate numeric expression
+    try {
+        // Use Function constructor for safe evaluation
+        return Function('"use strict"; return (' + result + ')')();
+    } catch (e) {
+        // Fallback: try direct evaluation
+        try {
+            return eval(result);
+        } catch (e2) {
+            console.error('Expression evaluation error:', e2);
+            return null;
+        }
+    }
+}
+
+/**
+ * Submit challenge solution for testing
+ */
+async function submitChallengeSolution(challengeId) {
+    const challenge = FLOWCODE_CHALLENGES.find(ch => ch.id === challengeId);
+    if (!challenge) return;
+    
+    // Get user's flowchart code
+    if (!window.App || !window.App.nodes || !window.App.connections) {
+        alert('Please create a flowchart first!');
+        return;
+    }
+    
+    // Generate test cases
+    const testCases = generateTestCases(challenge, 3);
+    if (!testCases || testCases.length === 0) {
+        alert('Unable to generate test cases for this challenge.');
+        return;
+    }
+    
+    // Check if required functions are available
+    if (!window.compileWithPipeline) {
+        alert('Compiler not ready. Please wait a moment and try again.');
+        return;
+    }
+    
+    if (!window.executeWithSkulpt) {
+        alert('Test execution not available. Please refresh the page.');
+        return;
+    }
+    
+    // Compile user's flowchart
+    let userCode;
+    try {
+        userCode = window.compileWithPipeline(window.App.nodes, window.App.connections, false, false);
+        if (!userCode || userCode.trim() === '') {
+            alert('Your flowchart is empty. Please create a solution first!');
+            return;
+        }
+    } catch (e) {
+        alert('Error compiling your flowchart: ' + e.message);
+        return;
+    }
+    
+    // Show loading state
+    const submitBtn = document.getElementById('btn-submit-challenge');
+    if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin me-1"></i>Testing...';
+    }
+    
+    // Run tests
+    const results = [];
+    for (let i = 0; i < testCases.length; i++) {
+        const testCase = testCases[i];
+        
+        // Convert inputs to appropriate types
+        const testInputs = testCase.inputs.map(input => {
+            const num = parseFloat(input);
+            return isNaN(num) ? input : num.toString();
+        });
+        
+        // Small delay between tests to avoid Skulpt state issues
+        if (i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+        // Execute user code
+        let result;
+        try {
+            if (!window.executeWithSkulpt) {
+                throw new Error('executeWithSkulpt not available');
+            }
+            
+            // Ensure Skulpt is available
+            if (typeof Sk === 'undefined') {
+                throw new Error('Skulpt not loaded');
+            }
+            
+            result = await window.executeWithSkulpt(userCode, testInputs, 3000);
+            
+            // Check if result is valid
+            if (!result || typeof result !== 'object') {
+                throw new Error('Execution returned invalid result');
+            }
+            
+            // Ensure output property exists
+            if (result.output === undefined) {
+                result.output = '';
+            }
+        } catch (e) {
+            console.error('Test execution error:', e);
+            results.push({
+                testNumber: i + 1,
+                inputs: testCase.inputs,
+                expected: testCase.expectedOutput.toString().trim(),
+                actual: '(execution error)',
+                passed: false,
+                error: e.message || 'Execution failed'
+            });
+            continue;
+        }
+        
+        // Clean output - preserve newlines for multi-line outputs
+        let actualOutput = (result.output || '').trim();
+        let expectedOutput = testCase.expectedOutput.toString().trim();
+        
+        // Normalize whitespace but preserve newlines
+        actualOutput = actualOutput.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        expectedOutput = expectedOutput.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        
+        // Handle numeric comparison with tolerance
+        let passed = false;
+        if (actualOutput === expectedOutput) {
+            passed = true;
+        } else {
+            // Try numeric comparison
+            const actualNum = parseFloat(actualOutput);
+            const expectedNum = parseFloat(expectedOutput);
+            if (!isNaN(actualNum) && !isNaN(expectedNum)) {
+                passed = Math.abs(actualNum - expectedNum) < 0.01;
+            }
+        }
+        
+        results.push({
+            testNumber: i + 1,
+            inputs: testCase.inputs,
+            expected: expectedOutput,
+            actual: actualOutput || '(no output)',
+            passed: passed,
+            error: result.error || null
+        });
+    }
+    
+    // Display results
+    displayTestResults(results);
+    
+    // Check if all tests passed
+    const allPassed = results.every(r => r.passed);
+    if (allPassed) {
+        // Automatically mark as complete
+        if (!CHALLENGE_COMPLETED.has(challengeId)) {
+            CHALLENGE_COMPLETED.add(challengeId);
+            saveCompletedChallenges(CHALLENGE_COMPLETED);
+            updateActiveChallengeCompleteButton(challengeId);
+            renderChallengeList();
+        }
+    }
+    
+    // Reset button
+    if (submitBtn) {
+        submitBtn.disabled = false;
+        submitBtn.innerHTML = '<i class="fa-solid fa-paper-plane me-1"></i>Submit Solution';
+    }
+}
+
+/**
+ * Display test results in the UI
+ */
+function displayTestResults(results) {
+    const resultsContainer = document.getElementById('active-challenge-test-results');
+    const resultsList = document.getElementById('test-results-list');
+    
+    if (!resultsContainer || !resultsList) return;
+    
+    // Switch to test tab
+    const testTab = document.getElementById('test-tab');
+    const pseudocodeTab = document.getElementById('pseudocode-tab');
+    if (testTab && pseudocodeTab) {
+        testTab.classList.add('active');
+        pseudocodeTab.classList.remove('active');
+        document.getElementById('test-pane').classList.add('show', 'active');
+        document.getElementById('pseudocode-pane').classList.remove('show', 'active');
+    }
+    
+    resultsContainer.style.display = 'block';
+    resultsList.innerHTML = '';
+    
+    results.forEach(result => {
+        const testDiv = document.createElement('div');
+        testDiv.className = `mb-2 p-2 border rounded ${result.passed ? 'bg-success bg-opacity-10 border-success' : 'bg-danger bg-opacity-10 border-danger'}`;
+        
+        const icon = result.passed ? 
+            '<i class="fa-solid fa-check-circle text-success me-2"></i>' : 
+            '<i class="fa-solid fa-times-circle text-danger me-2"></i>';
+        
+        const status = result.passed ? '<span class="text-success fw-bold">PASSED</span>' : '<span class="text-danger fw-bold">FAILED</span>';
+        
+        testDiv.innerHTML = `
+            <div class="d-flex align-items-center mb-1">
+                ${icon}
+                <strong>Test ${result.testNumber}:</strong> ${status}
+            </div>
+            <div class="small">
+                <div><strong>Input:</strong> ${result.inputs.join(', ')}</div>
+                <div><strong>Expected:</strong> <code>${result.expected}</code></div>
+                <div><strong>Got:</strong> <code>${result.actual || '(no output)'}</code></div>
+                ${result.error ? `<div class="text-danger"><strong>Error:</strong> ${result.error}</div>` : ''}
+            </div>
+        `;
+        
+        resultsList.appendChild(testDiv);
+    });
+}
 
 });
 
