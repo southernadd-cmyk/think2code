@@ -544,7 +544,7 @@ function updateActiveChallengeCompleteButton(challengeId) {
         // If already completed, close banner and open challenge selection modal
         if (isCompleted) {
             // Close the active challenge banner
-            document.getElementById("active-challenge-banner").style.display = "none";
+        document.getElementById("active-challenge-banner").style.display = "none";
             
             // Open the challenge selection modal
             const modal = new bootstrap.Modal(document.getElementById("challengesModal"));
@@ -601,7 +601,7 @@ if (document.readyState === 'loading') {
 } else {
     setupActiveChallengeButtons();
 }
-
+    
 // === Draggable challenge banner ===
 // === Global Draggable Challenge Banner ===
 (function () {
@@ -1092,27 +1092,38 @@ async function submitChallengeSolution(challengeId) {
         return;
     }
     
-    // Check if required functions are available
-    if (!window.compileWithPipeline) {
-        alert('Compiler not ready. Please wait a moment and try again.');
-        return;
-    }
-    
-    if (!window.executeWithSkulpt) {
-        alert('Test execution not available. Please refresh the page.');
-        return;
-    }
-    
     // Compile user's flowchart
     let userCode;
     try {
+        // Wait a moment to ensure compiler is loaded (compiler.js loads after challenges.js)
+        if (!window.compileWithPipeline) {
+            // Wait up to 1 second for compiler to be available
+            for (let i = 0; i < 10; i++) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                if (window.compileWithPipeline) break;
+            }
+            if (!window.compileWithPipeline) {
+                alert('Compiler not ready. Please refresh the page.');
+                return;
+            }
+        }
+        
+        if (!window.executeWithSkulpt) {
+            alert('Test execution not available. Please refresh the page.');
+            return;
+        }
+        
         userCode = window.compileWithPipeline(window.App.nodes, window.App.connections, false, false);
         if (!userCode || userCode.trim() === '') {
             alert('Your flowchart is empty. Please create a solution first!');
             return;
         }
     } catch (e) {
-        alert('Error compiling your flowchart: ' + e.message);
+        if (e.message && e.message.includes('compileWithPipeline')) {
+            alert('Compiler not ready. Please refresh the page.');
+        } else {
+            alert('Error compiling your flowchart: ' + e.message);
+        }
         return;
     }
     
@@ -1136,8 +1147,11 @@ async function submitChallengeSolution(challengeId) {
         
         // Small delay between tests to avoid Skulpt state issues
         if (i > 0) {
-            await new Promise(resolve => setTimeout(resolve, 100));
+            await new Promise(resolve => setTimeout(resolve, 200));
         }
+        
+        // Additional delay to ensure Skulpt is ready
+        await new Promise(resolve => setTimeout(resolve, 50));
         
         // Execute user code
         let result;
@@ -1147,7 +1161,7 @@ async function submitChallengeSolution(challengeId) {
             }
             
             // Ensure Skulpt is available
-            if (typeof Sk === 'undefined') {
+            if (typeof Sk === 'undefined' || !Sk || !Sk.configure) {
                 throw new Error('Skulpt not loaded');
             }
             

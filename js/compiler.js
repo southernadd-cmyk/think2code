@@ -9243,6 +9243,17 @@ function compileStructured(nodes, connections, useHighlighting = false, debugMod
  */
 async function executeWithSkulpt(code, testInputs = [], timeout = 5000) {
     return new Promise((resolve) => {
+        // Check if Skulpt is available
+        if (typeof Sk === 'undefined' || !Sk.configure) {
+            resolve({
+                output: '',
+                error: 'Skulpt not loaded',
+                variables: {},
+                timedOut: false
+            });
+            return;
+        }
+        
         const output = [];
         const variables = {};
         let inputIndex = 0;
@@ -9259,25 +9270,46 @@ async function executeWithSkulpt(code, testInputs = [], timeout = 5000) {
         }, timeout);
         
         // Configure Skulpt for testing
-        // Store original config (Skulpt may not return it from configure())
-        const originalConfig = {
-            output: Sk.configure().output || ((text) => {}),
-            inputfun: Sk.configure().inputfun || (() => ''),
-            inputfunTakesPrompt: Sk.configure().inputfunTakesPrompt || false
-        };
+        // Store original config - Sk.configure() doesn't return current config
+        // We need to access the current config from Sk's internal state or use App's config
+        let originalOutput = ((text) => {});
+        let originalInputfun = (() => '');
+        let originalInputfunTakesPrompt = false;
         
-        Sk.configure({
-            output: (text) => {
-                output.push(text);
-            },
-            inputfun: (prompt) => {
-                if (inputIndex < testInputs.length) {
-                    return testInputs[inputIndex++];
-                }
-                return ''; // Default empty input
-            },
-            inputfunTakesPrompt: true
-        });
+        // Try to get current config from App if available
+        if (window.App && window.App.log) {
+            // Store reference to App's log function
+            originalOutput = (t) => window.App.log(t);
+        }
+        if (window.App && window.App.handleInput) {
+            originalInputfun = (p) => window.App.handleInput(p);
+            originalInputfunTakesPrompt = true;
+        }
+        
+        // Configure Skulpt for testing
+        try {
+            Sk.configure({
+                output: (text) => {
+                    output.push(text);
+                },
+                inputfun: (prompt) => {
+                    if (inputIndex < testInputs.length) {
+                        return testInputs[inputIndex++];
+                    }
+                    return ''; // Default empty input
+                },
+                inputfunTakesPrompt: true
+            });
+        } catch (configError) {
+            clearTimeout(timeoutId);
+            resolve({
+                output: '',
+                error: 'Failed to configure Skulpt: ' + (configError.message || String(configError)),
+                variables: {},
+                timedOut: false
+            });
+            return;
+        }
         
         // Remove highlight calls for testing (they cause delays)
         const testCode = code.replace(/highlight\([^)]+\)\s*\n?/g, '');
@@ -9303,11 +9335,17 @@ async function executeWithSkulpt(code, testInputs = [], timeout = 5000) {
             }
             
             // Restore original Skulpt config
-            Sk.configure({
-                output: originalConfig.output,
-                inputfun: originalConfig.inputfun,
-                inputfunTakesPrompt: originalConfig.inputfunTakesPrompt
-            });
+            try {
+                if (typeof Sk !== 'undefined' && Sk && Sk.configure) {
+                    Sk.configure({
+                        output: originalOutput,
+                        inputfun: originalInputfun,
+                        inputfunTakesPrompt: originalInputfunTakesPrompt
+                    });
+                }
+            } catch (restoreError) {
+                console.warn('Failed to restore Skulpt config:', restoreError);
+            }
             
             resolve({
                 output: output.join(''),
@@ -9319,11 +9357,17 @@ async function executeWithSkulpt(code, testInputs = [], timeout = 5000) {
             clearTimeout(timeoutId);
             
             // Restore original Skulpt config
-            Sk.configure({
-                output: originalConfig.output,
-                inputfun: originalConfig.inputfun,
-                inputfunTakesPrompt: originalConfig.inputfunTakesPrompt
-            });
+            try {
+                if (typeof Sk !== 'undefined' && Sk && Sk.configure) {
+                    Sk.configure({
+                        output: originalOutput,
+                        inputfun: originalInputfun,
+                        inputfunTakesPrompt: originalInputfunTakesPrompt
+                    });
+                }
+            } catch (restoreError) {
+                console.warn('Failed to restore Skulpt config:', restoreError);
+            }
             
             const errorMsg = error.toString ? error.toString() : String(error);
             resolve({
