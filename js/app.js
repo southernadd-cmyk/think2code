@@ -1178,12 +1178,49 @@ const id = `n${this.nextId++}`;
             return;
         }
         
-        const modalEl = document.getElementById('deleteConfirmModal');
-        if (!modalEl) {
-            console.error('Delete confirmation modal not found');
-            // Don't auto-confirm, just return
+        // Wait for DOM to be ready if needed
+        const getModal = () => {
+            return document.getElementById('deleteConfirmModal');
+        };
+        
+        const tryShowModal = () => {
+            const modalEl = getModal();
+            if (modalEl) {
+                this._showDeleteModal(modalEl, message, onConfirm);
+                return true;
+            }
+            return false;
+        };
+        
+        // Try immediately
+        if (tryShowModal()) {
             return;
         }
+        
+        // If DOM is not ready, wait for it
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => {
+                if (!tryShowModal()) {
+                    console.error('Delete confirmation modal not found after DOMContentLoaded');
+                }
+            });
+            return;
+        }
+        
+        // DOM is ready but modal not found, retry with delay
+        console.warn('Delete confirmation modal not found, retrying...');
+        setTimeout(() => {
+            if (!tryShowModal()) {
+                console.error('Delete confirmation modal still not found after retry');
+                // Fallback to browser confirm dialog
+                if (confirm(message)) {
+                    onConfirm();
+                }
+            }
+        }, 100);
+    },
+    
+    _showDeleteModal(modalEl, message, onConfirm) {
         
         // Get existing modal instance or create new one
         let modal = bootstrap.Modal.getInstance(modalEl);
