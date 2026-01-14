@@ -7,7 +7,7 @@ window.EMBEDDED_FLOWS = window.EMBEDDED_FLOWS || {
         "nodes": [
             { "id": "n1", "type": "start", "x": 162, "y": 82, "text": "Start", "varName": "x", "prompt": "Enter value", "dtype": "int" },
             { "id": "n2", "type": "output", "x": 127.4000244140625, "y": 213.40005493164062, "text": "\"Welcome\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
-            { "id": "n3", "type": "var", "x": 393, "y": 127, "text": "app = \"FlowCode\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
+            { "id": "n3", "type": "var", "x": 393, "y": 127, "text": "app = \"Think2Code\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
             { "id": "n4", "type": "output", "x": 151.19998168945312, "y": 358.00006103515625, "text": "\"to\"", "varName": "x", "prompt": "Enter value", "dtype": "int" },
             { "id": "n5", "type": "output", "x": 399.60003662109375, "y": 310, "text": "app", "varName": "x", "prompt": "Enter value", "dtype": "int" },
             { "id": "n6", "type": "end", "x": 558.2000122070312, "y": 414.800048828125, "text": "End", "varName": "x", "prompt": "Enter value", "dtype": "int" }
@@ -2337,5 +2337,6 @@ addDot(parent, cls, portType) {
         console.log(`[App] Debug mode ${this.debugMode ? 'enabled' : 'disabled'}`);
         this.updateCode(); // Recompile with new debug setting
     }
+
 
 };
