@@ -1191,6 +1191,20 @@ const id = `n${this.nextId++}`;
                 // Try finding by class
                 modalEl = document.querySelector('.modal#deleteConfirmModal');
             }
+            if (!modalEl) {
+                // Try finding by button ID (more reliable)
+                const confirmBtn = document.getElementById('delete-confirm-btn');
+                if (confirmBtn) {
+                    modalEl = confirmBtn.closest('.modal');
+                }
+            }
+            if (!modalEl) {
+                // Try finding by message element
+                const messageEl = document.getElementById('delete-confirm-message');
+                if (messageEl) {
+                    modalEl = messageEl.closest('.modal');
+                }
+            }
             return modalEl;
         };
         
@@ -1227,8 +1241,20 @@ const id = `n${this.nextId++}`;
         setTimeout(() => {
             if (!tryShowModal()) {
                 console.error('Delete confirmation modal still not found after retry');
-                console.log('Available modals:', document.querySelectorAll('.modal').length);
-                console.log('Document body:', document.body ? 'exists' : 'missing');
+                const allModals = document.querySelectorAll('.modal');
+                console.log('Available modals:', allModals.length);
+                console.log('Modal IDs:', Array.from(allModals).map(m => m.id));
+                // Try to find modal by content/text
+                const modalByContent = Array.from(allModals).find(m => 
+                    m.textContent.includes('Confirm Delete') || 
+                    m.textContent.includes('delete') ||
+                    m.querySelector('#delete-confirm-btn')
+                );
+                if (modalByContent) {
+                    console.log('Found modal by content, using it');
+                    this._showDeleteModal(modalByContent, message, onConfirm);
+                    return;
+                }
                 // Fallback to browser confirm dialog
                 if (confirm(message)) {
                     onConfirm();
