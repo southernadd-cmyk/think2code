@@ -250,7 +250,7 @@ function orthogonalSmart(p1, p2, nodes) {
     `.replace(/\s+/g, ' ');
 }
 
-window. App = {
+window.App = {
     nodes: [], connections: [], nextId: 1, isRunning: false,
     isConnecting: false, connStart: null, fullExecCode: "",
     editingNode: null, selectedNodeId: null, selectedConnectionIndex: null, viewportScale: 1,
@@ -1867,7 +1867,27 @@ node.prompt = node.prompt || node.text || "";
         if (node.type === 'start' || node.type === 'end') return;
 
     this.editingNode = node;
+    const modalEl = document.getElementById('editModal');
+    const modalContent = modalEl.querySelector('.modal-content');
+    const modalHeader = modalEl.querySelector('.modal-header');
+    const modalTitle = modalEl.querySelector('.modal-title');
+    const modalFooter = modalEl.querySelector('.modal-footer');
     const body = document.getElementById('edit-modal-body');
+    
+    // Remove any existing node type classes
+    modalContent.className = 'modal-content';
+    modalContent.classList.add(`modal-node-${node.type}`);
+    
+    // Set unique titles for each node type
+    const titles = {
+        'output': 'Edit Output',
+        'decision': 'Edit Decision',
+        'input': 'Edit Input',
+        'var': 'Edit Variable',
+        'list': 'Edit List',
+        'process': 'Edit Process'
+    };
+    modalTitle.innerText = titles[node.type] || 'Edit Node';
 
     if (node.type === 'output') {
         body.innerHTML = `
@@ -2112,7 +2132,15 @@ setTimeout(() => {
         }, 0);
     }
 
-    new bootstrap.Modal(document.getElementById('editModal')).show();
+    const modal = new bootstrap.Modal(modalEl);
+    
+    // Reset modal styling when hidden
+    modalEl.addEventListener('hidden.bs.modal', () => {
+        modalContent.className = 'modal-content';
+        modalTitle.innerText = 'Edit Node';
+    }, { once: true });
+    
+    modal.show();
 }
 ,
 saveNodeEdit() {
