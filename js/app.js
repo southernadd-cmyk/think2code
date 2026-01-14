@@ -564,38 +564,58 @@ openSaveOptions() {
 }
 ,
 updateVarWatch(varsObj) {
-const div = document.getElementById("varwatch-table");
-if (!div) return;
+  const div = document.getElementById("varwatch-table");
+  if (!div) return;
 
-let html = "<table style='width:100%; border-collapse: collapse;'>";
-let hasVars = false;
+  div.innerHTML = ""; // clear
 
-for (const key in varsObj) {
-    // Filter out internal Skulpt attributes and the highlight function itself
+  const table = document.createElement("table");
+  table.style.width = "100%";
+  table.style.borderCollapse = "collapse";
+
+  let hasVars = false;
+
+  for (const key in varsObj) {
     if (key.startsWith("__") || key === "highlight" || key === "input" || key === "print") continue;
 
     let val = varsObj[key];
     let displayVal = val;
 
-    // Safely unwrap Skulpt types
-    if (val !== null && typeof val === 'object') {
-        if (val.v !== undefined) {
-            displayVal = val.v; // Standard primitives
-        } else if (val.tp$name !== undefined) {
-            displayVal = `[${val.tp$name}]`; // Objects/Lists
-        }
+    if (val !== null && typeof val === "object") {
+      if (val.v !== undefined) displayVal = val.v;
+      else if (val.tp$name !== undefined) displayVal = `[${val.tp$name}]`;
     }
 
-    html += `
-        <tr style="border-bottom: 1px solid #333;">
-            <td style="color: #888; padding: 4px; font-weight: bold;">${key}</td>
-            <td style="color: #0f0; padding: 4px; text-align: right;">${displayVal}</td>
-        </tr>`;
-    hasVars = true;
-}
+    const tr = document.createElement("tr");
+    tr.style.borderBottom = "1px solid #333";
 
-html += "</table>";
-div.innerHTML = hasVars ? html : "<em>No variables set</em>";
+    const tdKey = document.createElement("td");
+    tdKey.style.color = "#888";
+    tdKey.style.padding = "4px";
+    tdKey.style.fontWeight = "bold";
+    tdKey.textContent = String(key);
+
+    const tdVal = document.createElement("td");
+    tdVal.style.color = "#0f0";
+    tdVal.style.padding = "4px";
+    tdVal.style.textAlign = "right";
+    tdVal.textContent = String(displayVal);
+
+    tr.appendChild(tdKey);
+    tr.appendChild(tdVal);
+    table.appendChild(tr);
+
+    hasVars = true;
+  }
+
+  if (!hasVars) {
+    const em = document.createElement("em");
+    em.textContent = "No variables set";
+    div.appendChild(em);
+    return;
+  }
+
+  div.appendChild(table);
 },
 
 stopSim() {
@@ -896,27 +916,30 @@ const id = `n${this.nextId++}`;
 
     renderNode(node) {
     const el = document.createElement('div');
-    el.className = `node shape-${node.type}`; 
+    el.className = `node shape-${node.type}`;
     el.id = node.id;
-    el.style.left = node.x + 'px'; 
+    el.style.left = node.x + 'px';
     el.style.top = node.y + 'px';
-    
+
     let label = node.text;
     if (node.type === 'output') label = `${node.text}`;
     if (node.type === 'input') label = `${node.prompt}`;
-    
+
     // Logic for the Diamond SVG
     if (node.type === 'decision') {
         el.innerHTML = `
             <svg class="decision-svg" viewBox="0 0 100 100" preserveAspectRatio="none">
                 <polygon points="50,0 100,50 50,100 0,50" />
             </svg>
-            <div class="inner-text">${label}</div>
+            <div class="inner-text"></div>
         `;
     } else {
-        el.innerHTML = `<div class="inner-text">${label}</div>`;
+        el.innerHTML = `<div class="inner-text"></div>`;
     }
-    el.title = label || "";
+
+    // ✅ SAFE: no HTML parsing, so no XSS
+    el.querySelector('.inner-text').textContent = label ?? "";
+    el.title = label ?? "";
     // Ports
     if (node.type !== 'start') this.addDot(el, 'in', 'in');
     
@@ -1440,50 +1463,146 @@ window.onpointerup = (e) => {
     },
 
     setupDragDrop() {
-        document.querySelectorAll('.palette-item').forEach(p => 
+        const validTypes = ['start', 'end', 'process', 'var', 'list', 'input', 'output', 'decision'];
+    
+        // Must match your node sizes used elsewhere (getPortPos/exportImage)
+        const DIMS = {
+            start:    { w: 95,  h: 40 },
+            end:      { w: 95,  h: 40 },
+            process:  { w: 120, h: 50 },
+            var:      { w: 120, h: 50 },
+            list:     { w: 140, h: 50 },
+            input:    { w: 130, h: 50 },
+            output:   { w: 130, h: 50 },
+            decision: { w: 130, h: 110 }
+        };
+    
+        const getDims = (type) => DIMS[type] || { w: 120, h: 50 };
+    
+        // ----------------------------
+        // Desktop: HTML5 drag & drop
+        // ----------------------------
+        document.querySelectorAll('.palette-item').forEach(p => {
+            // Ensure desktop still works
+            p.draggable = true;
+    
             p.ondragstart = (e) => {
                 e.dataTransfer.setData('type', p.dataset.type);
                 e.dataTransfer.setData('valid', 'true');
-                
+    
                 // Store the mouse offset within the dragged item
                 const rect = p.getBoundingClientRect();
                 e.dataTransfer.setData('offsetX', e.clientX - rect.left);
                 e.dataTransfer.setData('offsetY', e.clientY - rect.top);
-            });
-        
+            };
+        });
+    
         this.canvas.ondragover = (e) => e.preventDefault();
-        
+    
         this.canvas.ondrop = (e) => {
             e.preventDefault();
-            
+    
             const type = e.dataTransfer.getData('type');
             const isValid = e.dataTransfer.getData('valid') === 'true';
-            const validTypes = ['start', 'end', 'process', 'var', 'list', 'input', 'output', 'decision'];
-            
+    
             if (isValid && validTypes.includes(type)) {
                 const rect = this.canvas.getBoundingClientRect();
-                
-                // Debug logging
-                console.log('Drop event:', {
-                    clientX: e.clientX,
-                    clientY: e.clientY,
-                    rectLeft: rect.left,
-                    rectTop: rect.top,
-                    viewportX: this.viewportX,
-                    viewportY: this.viewportY,
-                    viewportScale: this.viewportScale
-                });
-                
-                // Simple: drop at cursor position (no centering)
+    
+                // drop at cursor position (world coords)
                 const worldX = (e.clientX - rect.left - this.viewportX) / this.viewportScale;
-                const worldY = (e.clientY - rect.top - this.viewportY) / this.viewportScale;
-                
-                console.log('Creating node at:', { worldX, worldY });
-                
+                const worldY = (e.clientY - rect.top  - this.viewportY) / this.viewportScale;
+    
                 this.createNode(type, worldX, worldY);
             }
         };
+    
+        // -------------------------------------------------
+        // Mobile/Tablet: Pointer Events "ghost drag" fallback
+        // (works on iOS/Android tablets/phones)
+        // -------------------------------------------------
+        const makeGhost = (srcEl) => {
+            const g = srcEl.cloneNode(true);
+            g.classList.add('palette-ghost');
+            g.style.position = 'fixed';
+            g.style.left = '0px';
+            g.style.top = '0px';
+            g.style.zIndex = '999999';
+            g.style.pointerEvents = 'none';
+            g.style.opacity = '0.9';
+            g.style.transform = 'translate(-9999px, -9999px)';
+            document.body.appendChild(g);
+            return g;
+        };
+    
+        const removeGhost = (g) => {
+            try { g?.remove(); } catch (_) {}
+        };
+    
+        document.querySelectorAll('.palette-item').forEach((p) => {
+            // Important for touch: stop the browser interpreting this as scroll/zoom
+            p.style.touchAction = 'none';
+    
+            p.addEventListener('pointerdown', (e) => {
+                // Let desktop mouse keep using HTML5 DnD
+                if (e.pointerType === 'mouse') return;
+    
+                const type = p.dataset.type;
+                if (!validTypes.includes(type)) return;
+    
+                e.preventDefault();
+                e.stopPropagation();
+    
+                const dims = getDims(type);
+                const ghost = makeGhost(p);
+    
+                // Capture pointer so we keep getting move/up even if finger leaves the palette element
+                try { p.setPointerCapture(e.pointerId); } catch (_) {}
+    
+                const moveGhost = (clientX, clientY) => {
+                    // Center ghost under finger
+                    const x = clientX - (dims.w / 2);
+                    const y = clientY - (dims.h / 2);
+                    ghost.style.transform = `translate(${x}px, ${y}px)`;
+                };
+    
+                moveGhost(e.clientX, e.clientY);
+    
+                const onMove = (me) => {
+                    moveGhost(me.clientX, me.clientY);
+                };
+    
+                const finish = (ue) => {
+                    p.removeEventListener('pointermove', onMove);
+                    removeGhost(ghost);
+    
+                    // Where did we drop?
+                    const target = document.elementFromPoint(ue.clientX, ue.clientY);
+                    const droppedInsideCanvas = !!(target && (this.canvas === target || this.canvas.contains(target)));
+    
+                    if (droppedInsideCanvas) {
+                        const rect = this.canvas.getBoundingClientRect();
+    
+                        // Convert SCREEN -> WORLD and center node on finger
+                        const worldX = ((ue.clientX - rect.left - this.viewportX) / this.viewportScale) - (dims.w / 2);
+                        const worldY = ((ue.clientY - rect.top  - this.viewportY) / this.viewportScale) - (dims.h / 2);
+    
+                        this.createNode(type, worldX, worldY);
+    
+                        // If mobile palette overlay is open, close it after drop
+                        const palette = document.getElementById("palette");
+                        if (palette && window.innerWidth <= 768) palette.classList.remove("open");
+                    }
+    
+                    try { p.releasePointerCapture(ue.pointerId); } catch (_) {}
+                };
+    
+                p.addEventListener('pointermove', onMove);
+                p.addEventListener('pointerup', finish, { once: true });
+                p.addEventListener('pointercancel', finish, { once: true });
+            }, { passive: false });
+        });
     },
+    
 
     openEditor(node) {
         // Backward compatibility and safety defaults
@@ -1500,29 +1619,31 @@ node.prompt = node.prompt || node.text || "";
             <label class="small fw-bold mb-1">Output value (inside print)</label>
             <div class="input-group">
                 <span class="input-group-text">print(</span>
-                <input id="edit-output-text" class="form-control" value="${escHTML(node.text)}">
+                <input id="edit-output-text" class="form-control">
                 <span class="input-group-text">)</span>
             </div>
         `;
+        document.getElementById("edit-output-text").value = node.text ?? "";
     }
     else if (node.type === 'decision') {
         body.innerHTML = `
             <label class="small fw-bold mb-1">Decision condition</label>
             <div class="input-group">
                 <span class="input-group-text">if</span>
-                <input id="edit-decision-text" class="form-control" value="${escHTML(node.text)}">
+                <input id="edit-decision-text" class="form-control">
                 <span class="input-group-text">:</span>
             </div>
             <div class="form-text">Examples: x &lt; 10, total == 0, name != ""</div>
         `;
+        document.getElementById("edit-decision-text").value = node.text ?? "";
     }
     else if (node.type === 'input') {
         body.innerHTML = `
             <label class="small fw-bold">Variable name</label>
-            <input id="edit-input-var" class="form-control mb-2" value="${escHTML(node.varName) || escHTML(node.var) || ""}">
+            <input id="edit-input-var" class="form-control mb-2">
 
             <label class="small fw-bold">Prompt text</label>
-            <input id="edit-input-prompt" class="form-control mb-2" value="${escHTML(node.prompt) || escHTML(node.text) || ""}">
+            <input id="edit-input-prompt" class="form-control mb-2">
 
             <label class="small fw-bold">Input type</label>
             <select id="edit-input-dtype" class="form-select">
@@ -1535,6 +1656,8 @@ node.prompt = node.prompt || node.text || "";
                 <code id="input-preview"></code>
             </div>
         `;
+        document.getElementById("edit-input-var").value = node.varName || node.var || "";
+        document.getElementById("edit-input-prompt").value = node.prompt || node.text || "";
 
         setTimeout(() => {
             const updatePreview = () => {
@@ -1562,23 +1685,25 @@ node.prompt = node.prompt || node.text || "";
         let varValue = "";
 
         if (node.text && node.text.includes("=")) {
-            const parts = escHTML(node.text).split("=");
+            const parts = node.text.split("=");
             varName = parts[0].trim();
             varValue = parts.slice(1).join("=").trim();
         }
 
         body.innerHTML = `
             <label class="small fw-bold">Variable name</label>
-            <input id="edit-var-name" class="form-control mb-2" value="${varName}">
+            <input id="edit-var-name" class="form-control mb-2">
 
             <label class="small fw-bold">Value or expression</label>
-            <input id="edit-var-value" class="form-control mb-2" value="${varValue}">
+            <input id="edit-var-value" class="form-control mb-2">
 
             <div class="mt-2 small text-muted">
                 Preview:
                 <code id="var-preview"></code>
             </div>
         `;
+        document.getElementById("edit-var-name").value = varName;
+        document.getElementById("edit-var-value").value = varValue;
 
         setTimeout(() => {
             const updatePreview = () => {
@@ -1619,18 +1744,17 @@ let elementsHtml = "";
 for (let i = 0; i < length; i++) {
     elementsHtml += `
         <input class="form-control mb-1 list-element"
-               value="${values[i] ?? ''}"
                placeholder="Element ${i}">
     `;
 }
 
 body.innerHTML = `
     <label class="small fw-bold">List name</label>
-    <input id="edit-list-name" class="form-control mb-2" value="${listName}">
+    <input id="edit-list-name" class="form-control mb-2">
 
     <label class="small fw-bold">List length</label>
     <input id="edit-list-length" type="number"
-           min="0" class="form-control mb-2" value="${length}">
+           min="0" class="form-control mb-2">
 
     <label class="small fw-bold">Elements</label>
     <div id="list-elements-box">${elementsHtml}</div>
@@ -1640,6 +1764,15 @@ body.innerHTML = `
         <code id="list-preview"></code>
     </div>
 `;
+
+    // Set values safely after creating elements
+    document.getElementById("edit-list-name").value = listName;
+    document.getElementById("edit-list-length").value = length;
+    // Set list element values
+    const listElements = document.querySelectorAll(".list-element");
+    listElements.forEach((el, i) => {
+        el.value = values[i] ?? '';
+    });
 
 // dynamic behaviour
 setTimeout(() => {
@@ -1694,11 +1827,14 @@ setTimeout(() => {
             </div>
             <div id="code-input-container">
                 ${isMultiLine ?
-                    `<textarea id="edit-generic-text" class="form-control" rows="6" style="font-family: monospace; font-size: 0.9em;">${escHTML(node.text ?? "")}</textarea>` :
-                    `<input id="edit-generic-text" class="form-control" value="${escHTML(node.text ?? "")}">`
+                    `<textarea id="edit-generic-text" class="form-control" rows="6" style="font-family: monospace; font-size: 0.9em;"></textarea>` :
+                    `<input id="edit-generic-text" class="form-control">`
                 }
             </div>
         `;
+
+        // Set initial value safely
+        document.getElementById("edit-generic-text").value = node.text ?? "";
 
         // Add toggle functionality
         setTimeout(() => {
@@ -1709,12 +1845,14 @@ setTimeout(() => {
             toggle.addEventListener('change', () => {
                 if (toggle.checked) {
                     // Switch to textarea
-                    container.innerHTML = `<textarea id="edit-generic-text" class="form-control" rows="6" style="font-family: monospace; font-size: 0.9em;">${escHTML(currentText)}</textarea>`;
+                    container.innerHTML = `<textarea id="edit-generic-text" class="form-control" rows="6" style="font-family: monospace; font-size: 0.9em;"></textarea>`;
                 } else {
                     // Switch to input (convert newlines to spaces for single line)
                     const singleLine = currentText.replace(/\n/g, ' ');
-                    container.innerHTML = `<input id="edit-generic-text" class="form-control" value="${escHTML(singleLine)}">`;
+                    container.innerHTML = `<input id="edit-generic-text" class="form-control">`;
                 }
+                // Set value safely after creating element
+                document.getElementById("edit-generic-text").value = toggle.checked ? currentText : singleLine;
             });
         }, 0);
     }
