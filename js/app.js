@@ -1180,16 +1180,12 @@ const id = `n${this.nextId++}`;
         }
         
         // Wait for DOM to be ready if needed
-        const getModal = () => {
+        const getOrCreateModal = () => {
             // Try multiple methods to find the modal
             let modalEl = document.getElementById('deleteConfirmModal');
             if (!modalEl) {
                 // Try querySelector as alternative
                 modalEl = document.querySelector('#deleteConfirmModal');
-            }
-            if (!modalEl) {
-                // Try finding by class
-                modalEl = document.querySelector('.modal#deleteConfirmModal');
             }
             if (!modalEl) {
                 // Try finding by button ID (more reliable)
@@ -1205,11 +1201,37 @@ const id = `n${this.nextId++}`;
                     modalEl = messageEl.closest('.modal');
                 }
             }
+            
+            // If modal still not found, create it dynamically
+            if (!modalEl) {
+                console.warn('Delete confirmation modal not found in DOM, creating dynamically');
+                modalEl = document.createElement('div');
+                modalEl.className = 'modal fade';
+                modalEl.id = 'deleteConfirmModal';
+                modalEl.setAttribute('tabindex', '-1');
+                modalEl.innerHTML = `
+                    <div class="modal-dialog modal-dialog-centered">
+                        <div class="modal-content">
+                            <div class="modal-header py-2 bg-light">
+                                <h6 class="modal-title fw-bold">Confirm Delete</h6>
+                            </div>
+                            <div class="modal-body p-4">
+                                <p id="delete-confirm-message" class="mb-0">Are you sure you want to delete this item?</p>
+                            </div>
+                            <div class="modal-footer py-2 bg-light">
+                                <button class="btn btn-secondary btn-sm px-4 fw-bold" id="delete-cancel-btn">Cancel</button>
+                                <button class="btn btn-danger btn-sm px-4 fw-bold" id="delete-confirm-btn">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modalEl);
+            }
             return modalEl;
         };
         
         const tryShowModal = () => {
-            const modalEl = getModal();
+            const modalEl = getOrCreateModal();
             if (modalEl) {
                 this._showDeleteModal(modalEl, message, onConfirm);
                 return true;
