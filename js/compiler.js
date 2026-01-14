@@ -69,6 +69,17 @@ class LoopClassifier {
         const cycleHeaders = this.findCycleHeaders();
         console.log("Cycle headers found:", Array.from(cycleHeaders));
 
+        // Filter out invalid headers (input nodes can't be loop headers)
+        const validCycleHeaders = new Set();
+        for (const headerId of cycleHeaders) {
+            const node = this.nodes.find(n => n.id === headerId);
+            // Only include decision, process, and var nodes as potential headers
+            // Input nodes should not be loop headers
+            if (node && (node.type === 'decision' || node.type === 'process' || node.type === 'var')) {
+                validCycleHeaders.add(headerId);
+            }
+        }
+
         // Optionally find headers using dominator analysis (for validation/comparison)
         let dominatorHeaders = new Set();
         if (this.dominators) {
@@ -77,8 +88,11 @@ class LoopClassifier {
             this.validateDominatorHeaders(cycleHeaders, dominatorHeaders);
         }
 
-        // Use dominator-based headers if enabled, otherwise use cycle-based
-        const allHeaders = this.useDominatorHeaders && this.dominators ? dominatorHeaders : cycleHeaders;
+        // Use dominator-based headers if enabled and they found headers, otherwise use cycle-based
+        // If dominator headers are empty, fall back to cycle headers
+        const allHeaders = (this.useDominatorHeaders && this.dominators && dominatorHeaders.size > 0) 
+            ? dominatorHeaders 
+            : validCycleHeaders;
 
         // Allow all headers for classification (like old compiler)
         // Decision nodes can be while/for loops, non-decision nodes can be while-true loops
