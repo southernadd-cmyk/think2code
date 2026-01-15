@@ -73,13 +73,13 @@ class LoopClassifier {
         const cycleHeaders = this.findCycleHeaders();
         console.log("Cycle headers found:", Array.from(cycleHeaders));
 
-        // Filter out invalid headers (input nodes can't be loop headers)
+        // Filter out invalid headers (start/end nodes can't be loop headers)
         const validCycleHeaders = new Set();
         for (const headerId of cycleHeaders) {
             const node = this.nodes.find(n => n.id === headerId);
-            // Only include decision, process, and var nodes as potential headers
-            // Input nodes should not be loop headers
-            if (node && (node.type === 'decision' || node.type === 'process' || node.type === 'var')) {
+            // Include decision, process, var, output, and input nodes as potential headers
+            // Start/end nodes should not be loop headers
+            if (node && (node.type === 'decision' || node.type === 'process' || node.type === 'var' || node.type === 'output' || node.type === 'input')) {
                 validCycleHeaders.add(headerId);
             }
         }
@@ -270,16 +270,16 @@ class LoopClassifier {
             if (recursionStack.has(edge.to)) {
                 // Found a back edge from nodeId to edge.to (which is in recursion stack)
                 // The CURRENT node (nodeId) is the one making the back edge
-                // If nodeId is a decision, process, or var node, IT could be the loop header
+                // If nodeId is a decision, process, var, output, or input node, IT could be the loop header
                 const currentNode = this.nodes.find(n => n.id === nodeId);
-                if (currentNode && (currentNode.type === 'decision' || currentNode.type === 'process' || currentNode.type === 'var')) {
+                if (currentNode && (currentNode.type === 'decision' || currentNode.type === 'process' || currentNode.type === 'var' || currentNode.type === 'output' || currentNode.type === 'input')) {
                     cycleHeaders.add(nodeId);
                     console.log(`Cycle: ${currentNode.type} ${nodeId} has back edge to ${edge.to}`);
                 }
 
-                // Find the decision, process, or var node on the path to the back edge target
+                // Find the decision, process, var, output, or input node on the path to the back edge target
                 const targetNode = this.nodes.find(n => n.id === edge.to);
-                if (targetNode && (targetNode.type === 'decision' || targetNode.type === 'process' || targetNode.type === 'var')) {
+                if (targetNode && (targetNode.type === 'decision' || targetNode.type === 'process' || targetNode.type === 'var' || targetNode.type === 'output' || targetNode.type === 'input')) {
                     cycleHeaders.add(edge.to);
                     console.log(`Cycle: back edge to ${targetNode.type} ${edge.to}`);
                 } else {
@@ -300,7 +300,7 @@ class LoopClassifier {
                         const candidateId = stackArray[i];
                         const candidateNode = this.nodes.find(n => n.id === candidateId);
                         
-                        if (candidateNode && (candidateNode.type === 'decision' || candidateNode.type === 'process' || candidateNode.type === 'var')) {
+                        if (candidateNode && (candidateNode.type === 'decision' || candidateNode.type === 'process' || candidateNode.type === 'var' || candidateNode.type === 'output' || candidateNode.type === 'input')) {
                             // Verify this candidate is part of the cycle by checking if target is reachable from candidate
                             // Since we have a back edge to the target, and candidate is before target in DFS order,
                             // if candidate can reach target, then candidate is part of the cycle
@@ -312,7 +312,7 @@ class LoopClassifier {
                                 foundHeader = true;
                                 
                                 // Show warning to user if App is available (only once per compilation)
-                                // Use a more specific key that includes both target and header to prevent duplicates
+                                // Only show warning for truly invalid header types (start, end, etc.), not for valid types
                                 const warningKey = `loop-header-warning-${edge.to}-${candidateId}`;
                                 
                                 // Also check a global warning tracker to prevent duplicates across multiple calls
@@ -320,7 +320,11 @@ class LoopClassifier {
                                     window.__loopHeaderWarningsShown = new Set();
                                 }
                                 
-                                if (!this.warningsShown.has(warningKey) && 
+                                // Only show warning for invalid types (start, end, etc.), not for valid types (decision, process, var, output, input)
+                                const isInvalidType = targetNode && !['decision', 'process', 'var', 'output', 'input'].includes(targetNode.type);
+                                
+                                if (isInvalidType && 
+                                    !this.warningsShown.has(warningKey) && 
                                     !window.__loopHeaderWarningsShown?.has(warningKey) &&
                                     typeof window !== 'undefined' && window.App && window.App.showWarningToast) {
                                     this.warningsShown.add(warningKey);
@@ -330,15 +334,13 @@ class LoopClassifier {
                                     
                                     const targetNodeText = targetNode?.text || `node ${edge.to}`;
                                     const headerNodeText = candidateNode.text || `node ${candidateId}`;
-                                    const nodeTypeName = targetNode?.type === 'output' ? 'Output' : 
-                                                       targetNode?.type === 'input' ? 'Input' : 
-                                                       targetNode?.type || 'node';
+                                    const nodeTypeName = targetNode?.type || 'node';
                                     
                                     // Determine article (a/an) based on node type
-                                    const article = (targetNode?.type === 'output' || targetNode?.type === 'input') ? 'an' : 'a';
+                                    const article = (targetNode?.type === 'input' || targetNode?.type === 'output') ? 'an' : 'a';
                                     
                                     // Split message into two paragraphs
-                                    const message = `<p>Your loop connects back to ${article} ${nodeTypeName.toLowerCase()} node (${targetNodeText}), but loops need to start at a Decision, Process, or Variable node. The compiler will use ${headerNodeText} as the loop start instead.</p><p>To match your flowchart design, move the loop connection to start at a Decision or Process node.</p>`;
+                                    const message = `<p>Your loop connects back to ${article} ${nodeTypeName.toLowerCase()} node (${targetNodeText}), but loops need to start at a Decision, Process, Variable, Output, or Input node. The compiler will use ${headerNodeText} as the loop start instead.</p><p>To match your flowchart design, move the loop connection to start at a Decision, Process, Variable, Output, or Input node.</p>`;
                                     
                                     window.App.showWarningToast(message, 'Loop Structure Warning');
                                 }
@@ -795,9 +797,9 @@ class LoopClassifier {
                     const toNode = this.nodes.find(n => n.id === toId);
                     if (toNode) {
                         // Decision nodes can be while/for loop headers
-                        // Process/var nodes can be while-true loop headers
+                        // Process/var/output/input nodes can be while-true loop headers
                         // Other node types typically aren't loop headers
-                        if (toNode.type === 'decision' || toNode.type === 'process' || toNode.type === 'var') {
+                        if (toNode.type === 'decision' || toNode.type === 'process' || toNode.type === 'var' || toNode.type === 'output' || toNode.type === 'input') {
                             headers.add(toId);
                             console.log(`Back edge found: ${fromId} → ${toId} (${edge.port}), Loop header: ${toId} (${toNode.type})`);
                         }
@@ -1028,8 +1030,8 @@ class LoopClassifier {
             
             const bodyNodes = this.collectLoopBodyNodes(headerId, nextNode);
             
-            // For while-true loops with process node headers, the header itself is part of the body
-            // because it executes on each iteration (e.g., "x = not(x)" in a while-true loop)
+            // For while-true loops with process, var, output, or input node headers, the header itself is part of the body
+            // because it executes on each iteration (e.g., "x = not(x)", print statements, or input prompts in a while-true loop)
             if (!bodyNodes.includes(headerId)) {
                 bodyNodes.push(headerId);
             }
@@ -4887,14 +4889,14 @@ class EnhancedIRBuilder extends IRBuilder {
             // Convert to Set if it's an array
             const allowedIds = allowedIdsOverride ? new Set(allowedIdsOverride) : (loopInfo.bodyNodes instanceof Set ? new Set(loopInfo.bodyNodes) : new Set(loopInfo.bodyNodes));
             
-            // For while-true loops with process node headers, the header itself is part of the body
+            // For while-true loops with process, var, output, or input node headers, the header itself is part of the body
             // and we should start from the header itself (not its next node) so it's built first
             const headerNode = this.findNode(nodeId);
             let loopEntry = loopInfo.loopEntry;
             
-            // If header is a process node and it's in bodyNodes, make sure it's in allowedIds
+            // If header is a process, var, output, or input node and it's in bodyNodes, make sure it's in allowedIds
             // and use the header itself as the loop entry point
-            if (headerNode && (headerNode.type === 'process' || headerNode.type === 'var') && loopInfo.bodyNodes.includes(nodeId)) {
+            if (headerNode && (headerNode.type === 'process' || headerNode.type === 'var' || headerNode.type === 'output' || headerNode.type === 'input') && loopInfo.bodyNodes.includes(nodeId)) {
                 if (!allowedIds.has(nodeId)) {
                     console.log(`  Adding header ${nodeId} to allowedIds (process node in while-true loop)`);
                     allowedIds.add(nodeId);
@@ -5091,12 +5093,12 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                 // EXCEPTION: For while-true multi-exit loops, the header IS part of the body as an if-statement
                 // EXCEPTION: For while-true loops with process node headers, the header IS part of the body
                 if (currentNodeId === headerId && !treatHeaderAsIfStatement) {
-                    // Check if this is a while-true loop with a process node header
+                    // Check if this is a while-true loop with a process, var, output, or input node header
                     // In that case, the header is part of the body and should be built
                     const headerNode = this.findNode(headerId);
                     const isWhileTrueProcessHeader = loopInfo.type === 'while_true' && 
                                                      headerNode && 
-                                                     (headerNode.type === 'process' || headerNode.type === 'var');
+                                                     (headerNode.type === 'process' || headerNode.type === 'var' || headerNode.type === 'output' || headerNode.type === 'input');
                     
                     if (isWhileTrueProcessHeader) {
                         // Header is part of the body for while-true loops with process headers
@@ -5112,11 +5114,11 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
                 if (currentNodeId === headerId && treatHeaderAsIfStatement) {
                     // Fall through to build as if-statement
                 } else if (currentNodeId === headerId && loopInfo.type === 'while_true') {
-                    // For while-true loops, if the header is a process node and we're building it as part of the body,
+                    // For while-true loops, if the header is a process, var, output, or input node and we're building it as part of the body,
                     // skip the loop building and build it as a regular node instead
                     const headerNode = this.findNode(headerId);
                     const isWhileTrueProcessHeader = headerNode && 
-                                                     (headerNode.type === 'process' || headerNode.type === 'var');
+                                                     (headerNode.type === 'process' || headerNode.type === 'var' || headerNode.type === 'output' || headerNode.type === 'input');
                     if (isWhileTrueProcessHeader) {
                         // Fall through to build as regular node (skip loop building)
                     } else {
