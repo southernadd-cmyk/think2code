@@ -15,6 +15,9 @@ class LoopClassifier {
 
         // Loop patterns cache
         this.loopPatterns = new Map();
+        
+        // Track warnings shown to avoid duplicates
+        this.warningsShown = new Set();
 
         // Add findNode method
         this.findNode = (nodeId) => this.nodes.find(n => n.id === nodeId);
@@ -60,6 +63,7 @@ class LoopClassifier {
 
     classifyAllLoops() {
         this.loopPatterns.clear();
+        this.warningsShown.clear(); // Reset warnings for new compilation
         
         console.log("=== LOOP CLASSIFICATION DEBUG ===");
         console.log("Total nodes:", this.nodes.length);
@@ -284,6 +288,8 @@ class LoopClassifier {
                     // The recursion stack contains nodes in DFS order
                     const stackArray = Array.from(recursionStack);
                     let foundHeader = false;
+                    let actualHeaderId = null;
+                    let actualHeaderType = null;
                     
                     // Find the index of the target in the stack
                     const targetIndex = stackArray.indexOf(edge.to);
@@ -300,8 +306,43 @@ class LoopClassifier {
                             // if candidate can reach target, then candidate is part of the cycle
                             if (this.pathExists(candidateId, edge.to)) {
                                 cycleHeaders.add(candidateId);
+                                actualHeaderId = candidateId;
+                                actualHeaderType = candidateNode.type;
                                 console.log(`Cycle: back edge to ${targetNode?.type || 'unknown'} ${edge.to}, found header ${candidateNode.type} ${candidateId} in cycle`);
                                 foundHeader = true;
+                                
+                                // Show warning to user if App is available (only once per compilation)
+                                // Use a more specific key that includes both target and header to prevent duplicates
+                                const warningKey = `loop-header-warning-${edge.to}-${candidateId}`;
+                                
+                                // Also check a global warning tracker to prevent duplicates across multiple calls
+                                if (typeof window !== 'undefined' && !window.__loopHeaderWarningsShown) {
+                                    window.__loopHeaderWarningsShown = new Set();
+                                }
+                                
+                                if (!this.warningsShown.has(warningKey) && 
+                                    !window.__loopHeaderWarningsShown?.has(warningKey) &&
+                                    typeof window !== 'undefined' && window.App && window.App.showWarningToast) {
+                                    this.warningsShown.add(warningKey);
+                                    if (window.__loopHeaderWarningsShown) {
+                                        window.__loopHeaderWarningsShown.add(warningKey);
+                                    }
+                                    
+                                    const targetNodeText = targetNode?.text || `node ${edge.to}`;
+                                    const headerNodeText = candidateNode.text || `node ${candidateId}`;
+                                    const nodeTypeName = targetNode?.type === 'output' ? 'Output' : 
+                                                       targetNode?.type === 'input' ? 'Input' : 
+                                                       targetNode?.type || 'node';
+                                    
+                                    // Determine article (a/an) based on node type
+                                    const article = (targetNode?.type === 'output' || targetNode?.type === 'input') ? 'an' : 'a';
+                                    
+                                    // Split message into two paragraphs
+                                    const message = `<p>Your loop connects back to ${article} ${nodeTypeName.toLowerCase()} node (${targetNodeText}), but loops need to start at a Decision, Process, or Variable node. The compiler will use ${headerNodeText} as the loop start instead.</p><p>To match your flowchart design, move the loop connection to start at a Decision or Process node.</p>`;
+                                    
+                                    window.App.showWarningToast(message, 'Loop Structure Warning');
+                                }
+                                
                                 break; // Found the first valid header, stop searching
                             }
                         }

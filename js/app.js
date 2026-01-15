@@ -1719,6 +1719,11 @@ this.connections.forEach(c => {
 ,
 
 updateCode() {
+    // Clear global warning tracker at start of each compilation
+    if (typeof window !== 'undefined') {
+        window.__loopHeaderWarningsShown = new Set();
+    }
+    
     try {
         const code = window.compileWithPipeline(this.nodes, this.connections, false, false);
         this.renderPythonPreview(code);
@@ -2664,6 +2669,53 @@ addDot(parent, cls, portType) {
             document.getElementById('console').innerHTML = "";
             this.drawConns();
             this.updateCode();
+        });
+    },
+
+    showWarningToast(message, title = 'Warning') {
+        // Create toast container if it doesn't exist
+        let toastContainer = document.getElementById('toast-container');
+        if (!toastContainer) {
+            toastContainer = document.createElement('div');
+            toastContainer.id = 'toast-container';
+            toastContainer.className = 'toast-container position-fixed top-0 end-0 p-3';
+            toastContainer.style.zIndex = '9999';
+            document.body.appendChild(toastContainer);
+        }
+
+        // Create unique toast ID
+        const toastId = 'toast-' + Date.now();
+        
+        // Create toast element
+        const toastEl = document.createElement('div');
+        toastEl.id = toastId;
+        toastEl.className = 'toast';
+        toastEl.setAttribute('role', 'alert');
+        toastEl.setAttribute('aria-live', 'assertive');
+        toastEl.setAttribute('aria-atomic', 'true');
+        toastEl.innerHTML = `
+            <div class="toast-header bg-warning text-dark">
+                <i class="fa-solid fa-triangle-exclamation me-2"></i>
+                <strong class="me-auto">${title}</strong>
+                <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Close"></button>
+            </div>
+            <div class="toast-body">
+                ${message}
+            </div>
+        `;
+
+        toastContainer.appendChild(toastEl);
+
+        // Initialize and show toast
+        const toast = new bootstrap.Toast(toastEl, {
+            autohide: true,
+            delay: 8000 // 8 seconds
+        });
+        toast.show();
+
+        // Remove toast element after it's hidden
+        toastEl.addEventListener('hidden.bs.toast', () => {
+            toastEl.remove();
         });
     },
 
