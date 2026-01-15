@@ -135,6 +135,12 @@
         </div>
 
         <div id="canvas">
+            <div class="no-select" style="position:absolute; top:12px; left:12px; z-index:10;border:solid 2px #dc2626;background:#f8f9fa;border-radius:8px;padding:2px;">
+                <button class="btn btn-sm btn-light" onclick="App.clearCanvas()" title="Clear All">
+                    <i class="fa-solid fa-trash" style="color: #dc2626;"></i>
+                </button>
+            </div>
+            
             <div class="no-select" id="zoombox" style="position:absolute; top:12px; right:12px; z-index:10;border:solid 2px #2563eb;background:#f8f9fa;border-radius:8px;padding:2px;">
     
                 <button class="btn btn-sm btn-light" onclick="App.zoomIn()">
@@ -594,7 +600,6 @@ App.init();
 </body>
 
 </html>
-
 
 
 
