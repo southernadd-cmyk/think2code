@@ -1,7 +1,7 @@
 window.FlowCode = window.FlowCode || {};
 
 // Embedded example flows to avoid CORS issues when running from file://
-// Currently embeds welcome.json; add more entries as needed.
+// Currently embeds welcome.json and sumOfN.json; add more entries as needed.
 window.EMBEDDED_FLOWS = window.EMBEDDED_FLOWS || {
     "welcome.json": {
         "nodes": [
@@ -18,6 +18,31 @@ window.EMBEDDED_FLOWS = window.EMBEDDED_FLOWS || {
             { "from": "n2", "port": "next", "to": "n4" },
             { "from": "n4", "port": "next", "to": "n5" },
             { "from": "n5", "port": "next", "to": "n6" }
+        ],
+        "version": "3.0"
+    },
+    "sumOfN.json": {
+        "nodes": [
+            { "id": "n1", "type": "start", "text": "Start", "x": 432.8000183105469, "y": 4.799995422363281 },
+            { "id": "n2", "type": "input", "text": "Enter n", "varName": "n", "x": 296.0000305175781, "y": 90.39999389648438, "prompt": "\"Enter an integer\"", "dtype": "int" },
+            { "id": "n3", "type": "process", "text": "total = 0", "x": 42.399993896484375, "y": 81.60003662109375 },
+            { "id": "n4", "type": "process", "text": "i = 1", "x": 107.20001220703125, "y": 257.6000061035156 },
+            { "id": "n5", "type": "decision", "text": "i <= n", "x": 367.20001220703125, "y": 227.19998168945312 },
+            { "id": "n6", "type": "process", "text": "total = total + i", "x": 80, "y": 440 },
+            { "id": "n7", "type": "process", "text": "i = i + 1", "x": 80, "y": 520 },
+            { "id": "n8", "type": "output", "text": "f\"Sum of first {n} numbers is {total}\"", "x": 619.2000122070312, "y": 470.3999938964844 },
+            { "id": "n9", "type": "end", "text": "End", "x": 300, "y": 440 }
+        ],
+        "connections": [
+            { "from": "n1", "to": "n2", "port": "next" },
+            { "from": "n2", "to": "n3", "port": "next" },
+            { "from": "n3", "to": "n4", "port": "next" },
+            { "from": "n4", "to": "n5", "port": "next" },
+            { "from": "n5", "to": "n6", "port": "yes" },
+            { "from": "n5", "to": "n8", "port": "no" },
+            { "from": "n6", "to": "n7", "port": "next" },
+            { "from": "n7", "to": "n5", "port": "next" },
+            { "from": "n8", "to": "n9", "port": "next" }
         ],
         "version": "3.0"
     }
@@ -58,6 +83,159 @@ function rectIntersectsHorizontal(y, x1, x2, rect) {
         maxX >= rect.x &&
         minX <= rect.x + rect.w
     );
+}
+
+function orthogonalSmartWithPathfinding(p1, p2, nodes) {
+    // Use pathfinding.js for automatic routing if available
+    if (typeof PF !== 'undefined') {
+        try {
+            // Create a grid for pathfinding
+            // Scale coordinates to grid (use 10px grid cells for precision)
+            const GRID_SIZE = 10;
+            const padding = 20; // padding around nodes
+            
+            // Find bounds
+            let minX = Math.min(p1.x, p2.x) - padding;
+            let maxX = Math.max(p1.x, p2.x) + padding;
+            let minY = Math.min(p1.y, p2.y) - padding;
+            let maxY = Math.max(p1.y, p2.y) + padding;
+            
+            // Expand bounds to include all nodes
+            nodes.forEach(node => {
+                const d = {
+                    start:    { w: 95,  h: 40 },
+                    end:      { w: 95,  h: 40 },
+                    process:  { w: 120, h: 50 },
+                    var:      { w: 120, h: 50 },
+                    list:     { w: 140, h: 50 },
+                    input:    { w: 130, h: 50 },
+                    output:   { w: 130, h: 50 },
+                    decision: { w: 130, h: 110 }
+                }[node.type] || { w: 120, h: 50 };
+                
+                minX = Math.min(minX, node.x - padding);
+                maxX = Math.max(maxX, node.x + d.w + padding);
+                minY = Math.min(minY, node.y - padding);
+                maxY = Math.max(maxY, node.y + d.h + padding);
+            });
+            
+            // Create grid dimensions
+            const gridWidth = Math.ceil((maxX - minX) / GRID_SIZE);
+            const gridHeight = Math.ceil((maxY - minY) / GRID_SIZE);
+            
+            // Initialize grid (all walkable)
+            const matrix = [];
+            for (let y = 0; y < gridHeight; y++) {
+                matrix[y] = [];
+                for (let x = 0; x < gridWidth; x++) {
+                    matrix[y][x] = 0; // 0 = walkable
+                }
+            }
+            
+            // Mark nodes as obstacles
+            nodes.forEach(node => {
+                const d = {
+                    start:    { w: 95,  h: 40 },
+                    end:      { w: 95,  h: 40 },
+                    process:  { w: 120, h: 50 },
+                    var:      { w: 120, h: 50 },
+                    list:     { w: 140, h: 50 },
+                    input:    { w: 130, h: 50 },
+                    output:   { w: 130, h: 50 },
+                    decision: { w: 130, h: 110 }
+                }[node.type] || { w: 120, h: 50 };
+                
+                const nodeMinX = Math.floor((node.x - padding - minX) / GRID_SIZE);
+                const nodeMaxX = Math.ceil((node.x + d.w + padding - minX) / GRID_SIZE);
+                const nodeMinY = Math.floor((node.y - padding - minY) / GRID_SIZE);
+                const nodeMaxY = Math.ceil((node.y + d.h + padding - minY) / GRID_SIZE);
+                
+                for (let gy = Math.max(0, nodeMinY); gy < Math.min(gridHeight, nodeMaxY); gy++) {
+                    for (let gx = Math.max(0, nodeMinX); gx < Math.min(gridWidth, nodeMaxX); gx++) {
+                        matrix[gy][gx] = 1; // 1 = obstacle
+                    }
+                }
+            });
+            
+            // Create grid and finder
+            const grid = new PF.Grid(gridWidth, gridHeight, matrix);
+            const finder = new PF.AStarFinder({
+                diagonalMovement: PF.DiagonalMovement.Never // Orthogonal only
+            });
+            
+            // Convert world coordinates to grid coordinates
+            const startGridX = Math.floor((p1.x - minX) / GRID_SIZE);
+            const startGridY = Math.floor((p1.y - minY) / GRID_SIZE);
+            const endGridX = Math.floor((p2.x - minX) / GRID_SIZE);
+            const endGridY = Math.floor((p2.y - minY) / GRID_SIZE);
+            
+            // Find path
+            const path = finder.findPath(startGridX, startGridY, endGridX, endGridY, grid);
+            
+            if (path && path.length > 0) {
+                // Convert grid path back to world coordinates
+                const worldPath = path.map(([gx, gy]) => {
+                    const wx = gx * GRID_SIZE + minX;
+                    const wy = gy * GRID_SIZE + minY;
+                    return [wx, wy];
+                });
+                
+                // Simplify path - remove redundant points (same direction)
+                const simplified = [];
+                simplified.push([p1.x, p1.y]); // Start with exact source
+                
+                for (let i = 1; i < worldPath.length - 1; i++) {
+                    const [px, py] = worldPath[i];
+                    const [prevX, prevY] = worldPath[i - 1];
+                    const [nextX, nextY] = worldPath[i + 1];
+                    
+                    // Check if direction changes
+                    const dir1 = [px - prevX, py - prevY];
+                    const dir2 = [nextX - px, nextY - py];
+                    
+                    // Normalize direction vectors
+                    const norm1 = [dir1[0] !== 0 ? dir1[0] / Math.abs(dir1[0]) : 0, 
+                                  dir1[1] !== 0 ? dir1[1] / Math.abs(dir1[1]) : 0];
+                    const norm2 = [dir2[0] !== 0 ? dir2[0] / Math.abs(dir2[0]) : 0, 
+                                  dir2[1] !== 0 ? dir2[1] / Math.abs(dir2[1]) : 0];
+                    
+                    if (norm1[0] !== norm2[0] || norm1[1] !== norm2[1]) {
+                        // Direction changed - this is a corner
+                        simplified.push([px, py]);
+                    }
+                }
+                
+                simplified.push([p2.x, p2.y]); // End with exact target
+                
+                // Build SVG path from simplified points
+                let svgPath = 'M ' + simplified[0][0] + ' ' + simplified[0][1];
+                
+                for (let i = 1; i < simplified.length; i++) {
+                    const [x, y] = simplified[i];
+                    const [prevX, prevY] = simplified[i - 1];
+                    
+                    // Determine if horizontal or vertical move
+                    if (Math.abs(x - prevX) < 1) {
+                        // Vertical move
+                        svgPath += ' V ' + y;
+                    } else if (Math.abs(y - prevY) < 1) {
+                        // Horizontal move
+                        svgPath += ' H ' + x;
+                    } else {
+                        // Diagonal (shouldn't happen with orthogonal, but handle it)
+                        svgPath += ' L ' + x + ' ' + y;
+                    }
+                }
+                
+                return svgPath.replace(/\s+/g, ' ');
+            }
+        } catch (e) {
+            console.warn('Pathfinding.js routing failed, using fallback:', e);
+        }
+    }
+    
+    // Fallback to original method
+    return orthogonalSmart(p1, p2, nodes);
 }
 
 function orthogonalSmart(p1, p2, nodes) {
@@ -481,7 +659,7 @@ exportRoot.style.isolation = "isolate";
         const p2 = toLocal(p2w.x, p2w.y);
 
         const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-        path.setAttribute("d", orthogonalSmart(p1, p2, this.nodes));
+        path.setAttribute("d", orthogonalSmartWithPathfinding(p1, p2, this.nodes));
 
         path.setAttribute("fill", "none");
 
@@ -745,6 +923,7 @@ applyViewportTransform() {
         this.nodesLayer = document.getElementById('nodes-layer');
         this.svgLayer = document.getElementById('connections-layer');
         this.dragLine = document.getElementById('drag-line');
+        
         this.setupGlobalEvents();
         this.setupDragDrop();
         this.createNode('start', 50, 50);
@@ -977,7 +1156,7 @@ const id = `n${this.nextId++}`;
         
         const config = { id, type, x, y, text, varName, prompt, dtype };
         this.nodes.push(config); 
-        this.renderNode(config); 
+        this.renderNode(config);
         this.updateCode();
     },
 
@@ -1474,22 +1653,19 @@ this.svgLayer.appendChild(this.dragLine);
 // Draw each connection
 this.connections.forEach(c => {
     // world coords from node geometry
-const p1w = this.getPortPos(c.from, c.port);
-const p2w = this.getPortPos(c.to,   'in');
+    const p1w = this.getPortPos(c.from, c.port);
+    const p2w = this.getPortPos(c.to, 'in');
 
-// ✔ convert to screen coords because SVG NOT transformed
-const p1 = this.screenFromWorld(p1w.x, p1w.y);
-const p2 = this.screenFromWorld(p2w.x, p2w.y);
+    // ✔ convert to screen coords because SVG NOT transformed
+    const p1 = this.screenFromWorld(p1w.x, p1w.y);
+    const p2 = this.screenFromWorld(p2w.x, p2w.y);
 
+    // Use pathfinding.js for automatic routing if available, otherwise fallback
+    let dStr = orthogonalSmartWithPathfinding(p1, p2, this.nodes);
+    dStr = cleanPath(dStr);
 
-
-
-// CHANGE IT TO:
-let dStr = orthogonalSmart(p1, p2, this.nodes);
-dStr = cleanPath(dStr);  // Add this line
-
-const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-path.setAttribute('d', dStr);
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.setAttribute('d', dStr);
 
     // Store connection index for selection
     const connIndex = this.connections.indexOf(c);
