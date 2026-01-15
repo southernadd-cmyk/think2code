@@ -2205,3 +2205,7 @@ z-index: 2;                     /* sit above shape borders/fills */
     border-color: #0891b2;
 }
 
+dl{
+    border: solid 2px #FFD300;
+    padding: 4px;
+}
