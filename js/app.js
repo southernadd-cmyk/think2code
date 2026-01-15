@@ -2649,16 +2649,22 @@ addDot(parent, cls, portType) {
 
 
     clearCanvas() {
-        if(confirm("Clear all?")) {
-            this.nodes=[];
-            this.connections=[];
-            this.selectedNodeId=null;
-            document.getElementById('nodes-layer').innerHTML="";
-            document.getElementById('code-python').innerText="";
-            document.getElementById('console').innerHTML="";
+        // Show confirmation modal
+        this.confirmDelete('Are you sure you want to clear all nodes and connections?', () => {
+            // Remove action icons before clearing
+            document.querySelectorAll('.node-action-icon').forEach(icon => icon.remove());
+            document.querySelectorAll('.connection-action-icon').forEach(icon => icon.remove());
+            
+            this.nodes = [];
+            this.connections = [];
+            this.selectedNodeId = null;
+            this.selectedConnectionIndex = null;
+            document.getElementById('nodes-layer').innerHTML = "";
+            document.getElementById('code-python').innerText = "";
+            document.getElementById('console').innerHTML = "";
             this.drawConns();
             this.updateCode();
-        }
+        });
     },
 
     toggleDebug() {
