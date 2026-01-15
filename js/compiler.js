@@ -4533,6 +4533,28 @@ class EnhancedIRBuilder extends IRBuilder {
         // Pass parentAllowedIds so nested loop exit nodes can be checked against parent loop's allowedIds
         const bodyProgram = this.buildLoopBodyFromEntry(nodeId, allowedIds, new Set(), loopEntry, activeLoops, loopInfo.updateNodeId, false, parentAllowedIds);
         
+        // Always insert highlight for increment node at the correct position in the loop body
+        // The increment node is skipped during compilation, so we need to insert its highlight
+        if (loopInfo.updateNodeId) {
+            // Check if increment node is the direct successor of the loop header
+            const headerYesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
+            if (headerYesBranch === loopInfo.updateNodeId) {
+                // Increment node comes first (or is the loop entry) - insert highlight at the beginning
+                const highlightIR = new IRHighlight(loopInfo.updateNodeId);
+                bodyProgram.statements.unshift(highlightIR);
+            } else if (loopEntry !== loopInfo.updateNodeId) {
+                // Check if increment node comes before loop entry in execution flow
+                const incrementNext = this.getSuccessor(loopInfo.updateNodeId, 'next');
+                if (incrementNext === loopEntry) {
+                    // Increment node comes right before loop entry - insert highlight at the beginning
+                    const highlightIR = new IRHighlight(loopInfo.updateNodeId);
+                    bodyProgram.statements.unshift(highlightIR);
+                }
+            }
+            // If loopEntry === loopInfo.updateNodeId, the increment node is the loop entry
+            // and should be highlighted at the beginning (handled by the first condition above)
+        }
+        
         // Add pass statement if body is empty
         if (bodyProgram.statements.length === 0) {
             bodyProgram.addStatement(new IRStatement(`${nodeId}_pass`, 'pass', 'pass'));
@@ -4916,6 +4938,11 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
             // IMPORTANT: Skip nodes that are excluded (like increment nodes in for loops)
             // The excludeNodeId parameter is passed from buildForLoopFromInfo to exclude the increment node
             if (excludeNodeId && currentNodeId === excludeNodeId) {
+                // Insert highlight node at the position where the increment node would have been
+                // This ensures the highlight appears in the correct position in the execution flow
+                const highlightIR = new IRHighlight(currentNodeId);
+                bodyProgram.addStatement(highlightIR);
+                
                 // Skip this node but continue processing its successors
                 const graphNextId = this.getSuccessor(currentNodeId, 'next');
                 if (graphNextId && graphNextId !== headerId && !seenIds.has(graphNextId) && shouldAddToQueue(graphNextId)) {
@@ -7281,6 +7308,14 @@ class FlowchartCompiler {
                         lines.push(pad + "    pass");
                     }
                     if (node.elseBranch) {
+                        // Add highlight for decision node before else branch to show the check is happening
+                        if (self.useHighlighting && node.id) {
+                            const nodeData = self.nodes.find(n => n.id === node.id);
+                            if (nodeData && nodeData.type === 'decision') {
+                                lines.push(pad + `highlight('${node.id}')`);
+                            }
+                        }
+                        
                         // Check if elseBranch is another if statement (elif chain)
                         if (node.elseBranch.type === 'if') {
                             const elifCondition = node.elseBranch.condition || 'True';
@@ -7523,9 +7558,15 @@ class FlowchartCompiler {
                         lines.push(pad + "    pass");
                     }
                     
-                    // Add highlight for increment node at the end of loop body (if exists)
-                    if (self.useHighlighting && node.incrementNodeId) {
-                        lines.push(pad + "    " + `highlight('${node.incrementNodeId}')`);
+                    // Note: Increment node highlight is now inserted at the correct position
+                    // in the loop body (where the increment node was) rather than at the end
+                    
+                    // Add highlight for decision node (loop header) before exit to show the final check
+                    if (self.useHighlighting && node.id) {
+                        const nodeData = self.nodes.find(n => n.id === node.id);
+                        if (nodeData && nodeData.type === 'decision') {
+                            lines.push(pad + `highlight('${node.id}')`);
+                        }
                     }
                     
                     // Follow next chain (code after the loop)
@@ -9047,6 +9088,14 @@ function generateCodeFromIR(irProgram, options = {}) {
                     lines.push(pad + "    pass");
                 }
                 if (node.elseBranch) {
+                    // Add highlight for decision node before else branch to show the check is happening
+                    if (useHighlighting && node.id) {
+                        const nodeData = nodes.find(n => n.id === node.id);
+                        if (nodeData && nodeData.type === 'decision') {
+                            lines.push(pad + `highlight('${node.id}')`);
+                        }
+                    }
+                    
                     // Check if elseBranch is another if statement (elif chain)
                     if (node.elseBranch.type === 'if') {
                         lines.push(pad + `elif ${node.elseBranch.condition || 'True'}:`);
@@ -9151,9 +9200,15 @@ function generateCodeFromIR(irProgram, options = {}) {
 
                 emit(node.body, indent + 4);
 
-                // Add highlight for increment node at the end of loop body (if exists)
-                if (useHighlighting && node.incrementNodeId) {
-                    lines.push(pad + "    " + `highlight('${node.incrementNodeId}')`);
+                // Note: Increment node highlight is now inserted at the correct position
+                // in the loop body (where the increment node was) rather than at the end
+
+                // Add highlight for decision node (loop header) before exit to show the final check
+                if (useHighlighting && node.id) {
+                    const nodeData = nodes.find(n => n.id === node.id);
+                    if (nodeData && nodeData.type === 'decision') {
+                        lines.push(pad + `highlight('${node.id}')`);
+                    }
                 }
 
                 // Follow next chain (exit path after the loop)
