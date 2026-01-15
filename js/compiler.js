@@ -4571,36 +4571,49 @@ class EnhancedIRBuilder extends IRBuilder {
         // Always insert highlight for increment node at the correct position in the loop body
         // The increment node is skipped during compilation, so we need to insert its highlight
         if (loopInfo.updateNodeId) {
-            let highlightInserted = false;
+            // Check if highlight is already in the body (prevent duplicates)
+            const highlightAlreadyExists = bodyProgram.statements.some(
+                stmt => stmt.type === 'highlight' && stmt.id === loopInfo.updateNodeId
+            );
             
-            // Check if increment node is the direct successor of the loop header
-            const headerYesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
-            if (headerYesBranch === loopInfo.updateNodeId) {
-                // Increment node comes first (or is the loop entry) - insert highlight at the beginning
-                const highlightIR = new IRHighlight(loopInfo.updateNodeId);
-                bodyProgram.statements.unshift(highlightIR);
-                highlightInserted = true;
-            } else if (loopEntry !== loopInfo.updateNodeId) {
-                // Check if increment node comes before loop entry in execution flow
-                const incrementNext = this.getSuccessor(loopInfo.updateNodeId, 'next');
-                if (incrementNext === loopEntry) {
-                    // Increment node comes right before loop entry - insert highlight at the beginning
+            if (!highlightAlreadyExists) {
+                let highlightInserted = false;
+                
+                // Check if increment node is the direct successor of the loop header
+                const headerYesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
+                if (headerYesBranch === loopInfo.updateNodeId) {
+                    // Increment node comes first (or is the loop entry) - insert highlight at the beginning
                     const highlightIR = new IRHighlight(loopInfo.updateNodeId);
                     bodyProgram.statements.unshift(highlightIR);
                     highlightInserted = true;
+                } else if (loopEntry !== loopInfo.updateNodeId) {
+                    // Check if increment node comes before loop entry in execution flow
+                    const incrementNext = this.getSuccessor(loopInfo.updateNodeId, 'next');
+                    if (incrementNext === loopEntry) {
+                        // Increment node comes right before loop entry - insert highlight at the beginning
+                        const highlightIR = new IRHighlight(loopInfo.updateNodeId);
+                        bodyProgram.statements.unshift(highlightIR);
+                        highlightInserted = true;
+                    }
                 }
-            }
-            
-            // If increment node wasn't inserted at the beginning, insert it at the end
-            // This handles cases where the increment comes after the loop body (common in nested loops)
-            if (!highlightInserted) {
-                const highlightIR = new IRHighlight(loopInfo.updateNodeId);
-                bodyProgram.addStatement(highlightIR);
+                // Note: If loopEntry === loopInfo.updateNodeId and headerYesBranch !== loopInfo.updateNodeId,
+                // the increment node is the loop entry but not the direct successor - this is handled below
+                
+                // If increment node wasn't inserted at the beginning, insert it at the end
+                // This handles cases where the increment comes after the loop body (common in nested loops)
+                // OR when loopEntry === updateNodeId but it's not the direct successor
+                if (!highlightInserted) {
+                    const highlightIR = new IRHighlight(loopInfo.updateNodeId);
+                    bodyProgram.addStatement(highlightIR);
+                }
             }
         }
         
-        // Add pass statement if body is empty
-        if (bodyProgram.statements.length === 0) {
+        // Add pass statement if body is empty or only contains highlight nodes
+        // Highlights don't count as body content - we need actual code statements
+        const hasNonHighlightStatements = bodyProgram.statements.some(stmt => stmt.type !== 'highlight');
+        if (!hasNonHighlightStatements) {
+            // Body is empty or only has highlights - add pass statement
             bodyProgram.addStatement(new IRStatement(`${nodeId}_pass`, 'pass', 'pass'));
         }
         
@@ -4981,12 +4994,9 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
             
             // IMPORTANT: Skip nodes that are excluded (like increment nodes in for loops)
             // The excludeNodeId parameter is passed from buildForLoopFromInfo to exclude the increment node
+            // Note: Highlight for increment node is now inserted in buildForLoopFromInfo, not here
+            // to avoid duplicates and ensure correct positioning
             if (excludeNodeId && currentNodeId === excludeNodeId) {
-                // Insert highlight node at the position where the increment node would have been
-                // This ensures the highlight appears in the correct position in the execution flow
-                const highlightIR = new IRHighlight(currentNodeId);
-                bodyProgram.addStatement(highlightIR);
-                
                 // Skip this node but continue processing its successors
                 const graphNextId = this.getSuccessor(currentNodeId, 'next');
                 if (graphNextId && graphNextId !== headerId && !seenIds.has(graphNextId) && shouldAddToQueue(graphNextId)) {
