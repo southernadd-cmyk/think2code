@@ -375,22 +375,23 @@
         let compiler = null;
         let testResults = [];
 
-        // Check if compiler is loaded
+        // Check if compiler is loaded (using current pipeline)
         function loadCompiler() {
             try {
-                compiler = window.FlowchartCompiler;
+                compiler = window.FlowchartCompiler; // Keep for fallback compatibility
                 const compileWithPipeline = window.compileWithPipeline;
 
                 console.log('Checking compiler availability...');
                 console.log('window.FlowchartCompiler exists:', !!window.FlowchartCompiler);
                 console.log('window.compileWithPipeline exists:', !!window.compileWithPipeline);
 
-                if (compiler && typeof compiler === 'function' && compileWithPipeline && typeof compileWithPipeline === 'function') {
-                    console.log('Compiler loaded successfully');
+                // Primary requirement: compileWithPipeline (current pipeline)
+                // FlowchartCompiler is optional (only needed for fallback)
+                if (compileWithPipeline && typeof compileWithPipeline === 'function') {
+                    console.log('Current pipeline (compileWithPipeline) loaded successfully');
                     return true;
                 } else {
-                    console.error('Compiler functions not available:');
-                    console.error('- window.FlowchartCompiler:', typeof window.FlowchartCompiler, window.FlowchartCompiler);
+                    console.error('Current pipeline (compileWithPipeline) not available:');
                     console.error('- window.compileWithPipeline:', typeof window.compileWithPipeline, window.compileWithPipeline);
 
                     // Check if script loaded but had errors
@@ -410,11 +411,17 @@
             return embeddedFlows[filename] || null;
         }
 
-        // Compile with a compiler
+        // Compile with the current pipeline
         function compileWith(compilerClass, flowchart, useHighlighting = false, debugMode = false) {
             try {
-                const compiler = new compilerClass(flowchart.nodes, flowchart.connections, useHighlighting, debugMode);
-                return compiler.compile();
+                // Use compileWithPipeline (current pipeline) instead of direct compiler instantiation
+                if (window.compileWithPipeline && typeof window.compileWithPipeline === 'function') {
+                    return window.compileWithPipeline(flowchart.nodes, flowchart.connections, useHighlighting, debugMode);
+                } else {
+                    // Fallback to old method if compileWithPipeline not available
+                    const compiler = new compilerClass(flowchart.nodes, flowchart.connections, useHighlighting, debugMode);
+                    return compiler.compile();
+                }
             } catch (error) {
                 return { error: error.message, code: null };
             }
@@ -459,8 +466,8 @@
 
             const debugMode = document.getElementById('debugMode').checked;
 
-            // Compile with structured approach
-            const structuredResult = analyzeResult(compileWith(compiler, flowchart, debugMode));
+            // Compile with current pipeline (compileWithPipeline)
+            const structuredResult = analyzeResult(compileWith(compiler, flowchart, false, debugMode));
 
             // Compile with fallback (force state machine) - skip for now as compileAsStateMachine may not exist
             const fallbackResult = (() => {
@@ -560,14 +567,14 @@
                     </tr>`;
                 }
 
-                html += addRow('Structured', result.structuredResult);
+                html += addRow('Current Pipeline', result.structuredResult);
                 html += addRow('Fallback', result.fallbackResult);
                 html += '</table>';
             }
 
             if (showCode) {
                 if (result.structuredResult?.code) {
-                    html += '<h5>Structured Output:</h5><pre>' + escapeHtml(result.structuredResult.code) + '</pre>';
+                    html += '<h5>Current Pipeline Output:</h5><pre>' + escapeHtml(result.structuredResult.code) + '</pre>';
                 }
                 if (result.fallbackResult?.code) {
                     html += '<h5>Fallback Output:</h5><pre>' + escapeHtml(result.fallbackResult.code) + '</pre>';
@@ -594,7 +601,7 @@
 
             summaryDiv.innerHTML = `
                 <h3>Summary</h3>
-                <p>Structured Compilation: ${structuredCount}/${testResults.length} successful</p>
+                <p>Current Pipeline (compileWithPipeline): ${structuredCount}/${testResults.length} successful</p>
                 <p>Fallback Compilation: ${fallbackCount}/${testResults.length} successful</p>
                 <p>Truncated results: ${truncatedCount}</p>
                 <p>Fallback used: ${fallbackUsedCount}</p>
@@ -616,7 +623,7 @@
             const debugMode = document.getElementById('debugMode').checked;
             const result = {
                 filename: 'Current Flowchart',
-                structuredResult: analyzeResult(compileWith(compiler, flowchart, debugMode)),
+                structuredResult: analyzeResult(compileWith(compiler, flowchart, false, debugMode)),
                 fallbackResult: null
             };
 

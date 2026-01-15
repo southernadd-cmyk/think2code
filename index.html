@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta property="og:image" content="https://southernadd-cmyk.github.io/think2code/fc1.png">
 
-    <title>Think2Code beta</title>
+    <title>Think2Code β</title>
  <link rel="icon" type="image/png" href="favicon-96x96.png" sizes="96x96" />
 <link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <link rel="shortcut icon" href="favicon.ico" />
@@ -109,19 +109,74 @@
     <div class="main-area">
         <div id="palette">
             <div class="palette-header">Flow</div>
-            <div class="palette-item" draggable="true" data-type="start">Start</div>
-            <div class="palette-item" draggable="true" data-type="end">End</div>
+            <div class="palette-item" draggable="true" data-type="start">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                </svg>
+                <span>Start</span>
+            </div>
+            <div class="palette-item" draggable="true" data-type="end">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="8" y1="12" x2="16" y2="12"></line>
+                </svg>
+                <span>End</span>
+            </div>
 
-            <div class="palette-item" draggable="true" data-type="decision">Decision</div>
+            <div class="palette-item" draggable="true" data-type="decision">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 2l8 8-8 8-8-8 8-8z"></path>
+                </svg>
+                <span>Decision</span>
+            </div>
             
             <div class="palette-header">Logic</div>
-            <div class="palette-item" draggable="true" data-type="var">Variable</div>
-            <div class="palette-item" draggable="true" data-type="list">List</div>
-            <div class="palette-item" draggable="true" data-type="process">Process</div>
+            <div class="palette-item" draggable="true" data-type="var">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 7h6"></path>
+                    <path d="M4 12h6"></path>
+                    <path d="M4 17h16"></path>
+                    <path d="M14 7h6"></path>
+                    <path d="M14 12h6"></path>
+                </svg>
+                <span>Variable</span>
+            </div>
+            <div class="palette-item" draggable="true" data-type="list">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="8" y1="6" x2="21" y2="6"></line>
+                    <line x1="8" y1="12" x2="21" y2="12"></line>
+                    <line x1="8" y1="18" x2="21" y2="18"></line>
+                    <line x1="3" y1="6" x2="3.01" y2="6"></line>
+                    <line x1="3" y1="12" x2="3.01" y2="12"></line>
+                    <line x1="3" y1="18" x2="3.01" y2="18"></line>
+                </svg>
+                <span>List</span>
+            </div>
+            <div class="palette-item" draggable="true" data-type="process">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="3"></circle>
+                    <path d="M12 1v6m0 6v6M5.64 5.64l4.24 4.24m4.24 4.24l4.24 4.24M1 12h6m6 0h6M5.64 18.36l4.24-4.24m4.24-4.24l4.24-4.24"></path>
+                </svg>
+                <span>Process</span>
+            </div>
             
             <div class="palette-header">I/O</div>
-            <div class="palette-item" draggable="true" data-type="input">Input</div>
-            <div class="palette-item" draggable="true" data-type="output">Output</div>
+            <div class="palette-item" draggable="true" data-type="input">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>Input</span>
+            </div>
+            <div class="palette-item" draggable="true" data-type="output">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M21 9v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9"></path>
+                    <polyline points="17 14 12 9 7 14"></polyline>
+                    <line x1="12" y1="9" x2="12" y2="21"></line>
+                </svg>
+                <span>Output</span>
+            </div>
 
             <div class="palette-header">Speed</div>
             <div id="speed-slider-container">
