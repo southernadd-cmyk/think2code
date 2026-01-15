@@ -266,27 +266,52 @@ class LoopClassifier {
             if (recursionStack.has(edge.to)) {
                 // Found a back edge from nodeId to edge.to (which is in recursion stack)
                 // The CURRENT node (nodeId) is the one making the back edge
-                // If nodeId is a decision or process node, IT is the loop header
+                // If nodeId is a decision, process, or var node, IT could be the loop header
                 const currentNode = this.nodes.find(n => n.id === nodeId);
-                if (currentNode && (currentNode.type === 'decision' || currentNode.type === 'process')) {
+                if (currentNode && (currentNode.type === 'decision' || currentNode.type === 'process' || currentNode.type === 'var')) {
                     cycleHeaders.add(nodeId);
                     console.log(`Cycle: ${currentNode.type} ${nodeId} has back edge to ${edge.to}`);
                 }
 
-                // Find the decision or process node on the path to the back edge target
-                // Only add the target of the back edge as a potential loop header
-                // Don't add all process nodes in the recursion stack - that's too aggressive
-                // and catches initialization code that happens before the actual loop
-                // (e.g., "total = 0" before a for loop)
+                // Find the decision, process, or var node on the path to the back edge target
                 const targetNode = this.nodes.find(n => n.id === edge.to);
-                if (targetNode && (targetNode.type === 'decision' || targetNode.type === 'process')) {
-                        cycleHeaders.add(edge.to);
+                if (targetNode && (targetNode.type === 'decision' || targetNode.type === 'process' || targetNode.type === 'var')) {
+                    cycleHeaders.add(edge.to);
                     console.log(`Cycle: back edge to ${targetNode.type} ${edge.to}`);
-                    } else {
-                    // Walk back through recursion stack to find the controlling decision/process
-                        // Add the target anyway - will be filtered later
+                } else {
+                    // Back edge goes to a non-header node (e.g., output, input)
+                    // Walk back through recursion stack to find the first valid loop header
+                    // The recursion stack contains nodes in DFS order
+                    const stackArray = Array.from(recursionStack);
+                    let foundHeader = false;
+                    
+                    // Find the index of the target in the stack
+                    const targetIndex = stackArray.indexOf(edge.to);
+                    
+                    // Walk backwards from the target to find the first valid header
+                    // Nodes before the target in the recursion stack are part of the path to the target
+                    for (let i = targetIndex - 1; i >= 0; i--) {
+                        const candidateId = stackArray[i];
+                        const candidateNode = this.nodes.find(n => n.id === candidateId);
+                        
+                        if (candidateNode && (candidateNode.type === 'decision' || candidateNode.type === 'process' || candidateNode.type === 'var')) {
+                            // Verify this candidate is part of the cycle by checking if target is reachable from candidate
+                            // Since we have a back edge to the target, and candidate is before target in DFS order,
+                            // if candidate can reach target, then candidate is part of the cycle
+                            if (this.pathExists(candidateId, edge.to)) {
+                                cycleHeaders.add(candidateId);
+                                console.log(`Cycle: back edge to ${targetNode?.type || 'unknown'} ${edge.to}, found header ${candidateNode.type} ${candidateId} in cycle`);
+                                foundHeader = true;
+                                break; // Found the first valid header, stop searching
+                            }
+                        }
+                    }
+                    
+                    if (!foundHeader) {
+                        // Fallback: add the target anyway - will be filtered later
                         cycleHeaders.add(edge.to);
-                    console.log(`Cycle: back edge to ${targetNode?.type || 'unknown'} ${edge.to} (will filter)`);
+                        console.log(`Cycle: back edge to ${targetNode?.type || 'unknown'} ${edge.to} (will filter - no valid header found)`);
+                    }
                 }
             } else {
             this.detectCyclesDFS(edge.to, visited, recursionStack, cycleHeaders);
