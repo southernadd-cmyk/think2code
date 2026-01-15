@@ -4257,6 +4257,23 @@ class EnhancedIRBuilder extends IRBuilder {
                         }
                     }
                     
+                    // Insert highlight for decision node at the start of else branch (for all regular else branches)
+                    // This shows the decision was checked when the "no" path is taken
+                    // Skip for elif chains (elseBranch.type === 'if') as they're handled separately
+                    if (ifNode.elseBranch && ifNode.elseBranch.type !== 'if') {
+                        const highlightIR = new IRHighlight(nodeId);
+                        if (ifNode.elseBranch.type === 'program' || ifNode.elseBranch.statements) {
+                            // It's already a program - insert highlight at the beginning
+                            ifNode.elseBranch.statements.unshift(highlightIR);
+                        } else {
+                            // It's a single statement - wrap in program with highlight first
+                            const elseProgram = new IRProgram();
+                            elseProgram.addStatement(highlightIR);
+                            elseProgram.addStatement(ifNode.elseBranch);
+                            ifNode.elseBranch = elseProgram;
+                        }
+                    }
+                    
                     // SPECIAL CASE: If the convergence point is the direct next of both branches,
                     // include it in both branches (like the old compiler does for cases like output = "" after input)
                     // BUT: Only for specific cases, not for general convergence points
@@ -4278,8 +4295,26 @@ class EnhancedIRBuilder extends IRBuilder {
                     // Append break to end of branch
                     ifNode.elseBranch = this.appendBreakToBranch(ifNode.elseBranch, `${nodeId}_no_break`);
                     console.log(`  Added break to NO branch (via BreakManager)`);
+                    }
                 }
-            } else {
+                
+                // Insert highlight for decision node at the start of else branch (for all regular else branches)
+                // This shows the decision was checked when the "no" path is taken
+                // Skip for elif chains (elseBranch.type === 'if') as they're handled separately
+                // Do this after all elseBranch building is complete
+                if (ifNode.elseBranch && ifNode.elseBranch.type !== 'if') {
+                    const highlightIR = new IRHighlight(nodeId);
+                    if (ifNode.elseBranch.type === 'program' || ifNode.elseBranch.statements) {
+                        // It's already a program - insert highlight at the beginning
+                        ifNode.elseBranch.statements.unshift(highlightIR);
+                    } else {
+                        // It's a single statement - wrap in program with highlight first
+                        const elseProgram = new IRProgram();
+                        elseProgram.addStatement(highlightIR);
+                        elseProgram.addStatement(ifNode.elseBranch);
+                        ifNode.elseBranch = elseProgram;
+                    }
+                } else {
                 ifNode.elseBranch = null;
             }
         }
@@ -7210,6 +7245,14 @@ class FlowchartCompiler {
                     break;
                     
                 case 'if':
+                    // Add highlight for decision node at the beginning (yes path)
+                    if (self.useHighlighting && node.id) {
+                        const nodeData = self.nodes.find(n => n.id === node.id);
+                        if (nodeData && nodeData.type === 'decision') {
+                            lines.push(pad + `highlight('${node.id}')`);
+                        }
+                    }
+                    
                     // Guard against undefined condition
                     const ifCondition = node.condition || 'True';
                     lines.push(pad + `if ${ifCondition}:`);
@@ -7308,16 +7351,11 @@ class FlowchartCompiler {
                         lines.push(pad + "    pass");
                     }
                     if (node.elseBranch) {
-                        // Add highlight for decision node before else branch to show the check is happening
-                        if (self.useHighlighting && node.id) {
-                            const nodeData = self.nodes.find(n => n.id === node.id);
-                            if (nodeData && nodeData.type === 'decision') {
-                                lines.push(pad + `highlight('${node.id}')`);
-                            }
-                        }
-                        
                         // Check if elseBranch is another if statement (elif chain)
                         if (node.elseBranch.type === 'if') {
+                            // Note: We don't highlight the original decision node before elif branches
+                            // because that would break the if-elif chain syntax in Python.
+                            // Each elif is a separate decision node and will be highlighted individually.
                             const elifCondition = node.elseBranch.condition || 'True';
                             lines.push(pad + `elif ${elifCondition}:`);
                             if (node.elseBranch.thenBranch) {
@@ -7458,6 +7496,8 @@ class FlowchartCompiler {
                                 }
                             }
                         } else {
+                            // Note: Highlight for decision node is now inserted into the elseBranch during IR construction
+                            // This avoids syntax errors and is more reliable
                             lines.push(pad + `else:`);
                             emit(node.elseBranch, indent + 4, false);  // Nested context
                         }
@@ -9043,8 +9083,8 @@ function generateCodeFromIR(irProgram, options = {}) {
         }
 
         // Add highlighting for nodes with IDs (except start and end nodes which are handled separately)
-        // Skip 'for' loops here - they handle their own highlights specially (initNodeId, etc.)
-        if (useHighlighting && node.id && node.type !== 'program' && node.type !== 'for') {
+        // Skip 'for' loops and 'if' statements here - they handle their own highlights specially
+        if (useHighlighting && node.id && node.type !== 'program' && node.type !== 'for' && node.type !== 'if') {
             const nodeData = nodes.find(n => n.id === node.id);
             // Don't highlight start and end nodes - they're handled at the top level
             if (nodeData && nodeData.type !== 'start' && nodeData.type !== 'end') {
@@ -9072,6 +9112,14 @@ function generateCodeFromIR(irProgram, options = {}) {
                 break;
 
             case 'if':
+                // Add highlight for decision node at the beginning (yes path)
+                if (useHighlighting && node.id) {
+                    const nodeData = nodes.find(n => n.id === node.id);
+                    if (nodeData && nodeData.type === 'decision') {
+                        lines.push(pad + `highlight('${node.id}')`);
+                    }
+                }
+                
                 lines.push(pad + `if ${node.condition || 'True'}:`);
                 if (node.thenBranch) {
                     // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
@@ -9088,16 +9136,11 @@ function generateCodeFromIR(irProgram, options = {}) {
                     lines.push(pad + "    pass");
                 }
                 if (node.elseBranch) {
-                    // Add highlight for decision node before else branch to show the check is happening
-                    if (useHighlighting && node.id) {
-                        const nodeData = nodes.find(n => n.id === node.id);
-                        if (nodeData && nodeData.type === 'decision') {
-                            lines.push(pad + `highlight('${node.id}')`);
-                        }
-                    }
-                    
                     // Check if elseBranch is another if statement (elif chain)
                     if (node.elseBranch.type === 'if') {
+                        // Note: We don't highlight the original decision node before elif branches
+                        // because that would break the if-elif chain syntax in Python.
+                        // Each elif is a separate decision node and will be highlighted individually.
                         lines.push(pad + `elif ${node.elseBranch.condition || 'True'}:`);
                         if (node.elseBranch.thenBranch) {
                             // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
@@ -9139,6 +9182,8 @@ function generateCodeFromIR(irProgram, options = {}) {
                             emit(currentElif, indent + 4);
                         }
                     } else {
+                        // Note: Highlight for decision node is now inserted into the elseBranch during IR construction
+                        // This avoids syntax errors and is more reliable
                         lines.push(pad + `else:`);
                         // Emit branch - if it's a program, it will iterate; if it's a statement, follow .next chain
                         if (node.elseBranch.type === 'program' || node.elseBranch.statements) {
