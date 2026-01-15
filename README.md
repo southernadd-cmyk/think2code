@@ -1,168 +1,195 @@
-# think2code
+# Think2Code
 
-Build **real, executable flowcharts** in the browser — then automatically generate Python code and run it step-by-step.
+**Think2Code** is a browser-based web app that lets learners build **real, executable flowcharts** and automatically generate **real Python code** from them.
 
-think2code is designed for teaching programming and algorithmic thinking at KS3/KS4/college level. Students drag blocks, connect them, run the program, and instantly see corresponding Python.
+Unlike many visual tools, Think2Code does not simulate execution.  
+The Python code it generates is **actually executed** (via Skulpt), and each running step is visually highlighted back on the flowchart.
+
+The goal is to bridge:
+- flowcharts
+- pseudocode
+- real Python
+
+in a way that is faithful, inspectable, and suitable for teaching.
+
 ---
 
-## 🚀 Live features
+## What Think2Code Is
 
-### 🧱 Drag-and-drop editor
-- Start, End, Process, Input, Output
-- Decision (diamond)
+Think2Code is:
+
+- a **flowchart editor**
+- a **Python code generator**
+- a **step-by-step visual executor**
+- a **teaching tool for algorithms and control flow**
+
+It is designed primarily for:
+- KS3 / KS4 Computing
+- BTEC / T-Level IT
+- FE / introductory HE programming
+
+---
+
+## Core Features
+
+### Flowchart Editor
+Students build programs using standard flowchart blocks:
+
+- Start / End
+- Process
+- Input / Output
+- Decision (Yes / No)
 - Variable and List blocks
-- Connection ports & auto-routed links
-- Node snapping and highlighting
-- Double-click to edit
 
-### ▶️ Executable flowcharts
-- Python is generated automatically
-- Step-by-step visual execution
-- Highlight current running node
-- Console output panel
-- Input modal for `input()` nodes
-- Execution speed slider
+Features include:
+- drag-and-drop placement
+- auto-routed connections
+- editable node text
+- zoom and pan
+- visual node highlighting during execution
 
-### 🔁 Control structures supported
-think2code currently supports:
+---
 
-- sequence
-- selection (IF / ELIF / ELSE)
-- **while loops**
-- **for loops (auto-detected patterns)**
-- infinite / implicit loops
-- nested loops and conditionals
+### Real Python Generation
 
-The compiler translates decision diamonds into real Python based on control-flow graph inspection — not just linear text matching.
+Every flowchart is compiled into **actual Python**, not pseudocode.
 
-### 🧭 Zooming and view control
-- Zoom in
-- Zoom out
-- Reset view
-- Smooth scaling of nodes and edges
+The compiler supports:
+- linear sequence
+- selection (`if / else`)
+- `while` loops
+- **auto-detected `for` loops**
+- implicit / infinite loops
+- nested control structures
+- `break` statements where semantically valid
 
-### 🧪 Challenges mode
-30+ scaffolded tasks split by difficulty:
+The generated Python can be:
+- previewed
+- exported
+- executed step-by-step with visual feedback
 
-- sequence
-- selection
-- iteration
-- while loops
-- lists
-- mixed challenges
+---
 
-Each challenge includes:
+### Visual Execution
 
-- title
-- difficulty badge
-- description
-- **pseudocode**
+When a program runs:
+
+- Python is executed in-browser using Skulpt
+- the currently executing node is highlighted
+- output appears in a console panel
+- `input()` nodes trigger a modal input dialog
+- execution speed can be adjusted
+
+This makes control flow *visible*, not abstract.
+
+---
+
+### Challenges Mode
+
+Think2Code includes a built-in challenges system with scaffolded tasks and **automatic submission checking**.
+
+Each challenge provides:
+- a title and difficulty level
+- a problem description
+- supporting pseudocode
 - success criteria
-- skills focus
+- skill focus
 
-When selected:
-
-- “Active Challenge” banner appears
-- pseudocode displayed underneath
-- banner can be dragged anywhere
-- banner always stays on top
-- students can hide it at any time
+Students work directly in the flowchart editor to solve the challenge.
 
 ---
 
-## 🧰 Export options
+### Submit and Test
 
-Export dialog allows:
+Challenges include a **Submit and Test** feature that allows students to check their solution.
 
-- ✔ Python source file
-- ✔ JSON diagram file
-- ✔ PNG image via `html2canvas`
+When submitted:
+- the student’s flowchart is compiled into Python
+- the generated program is executed against predefined tests
+- the submission is marked as **correct** or **incorrect**
+- feedback is returned immediately in the interface
 
-Students can:
+This allows students to:
+- verify correctness independently
+- iterate on solutions
+- develop debugging and problem-solving skills
 
-- submit diagrams
-- submit Python
-- email/share JSON
-- paste diagrams between sessions
+Teachers can use this feature to:
+- support self-paced learning
+- reduce reliance on manual checking
+- focus attention on students who need support
+
+The testing process evaluates **program behaviour**, not diagram shape, allowing multiple valid solutions.
 
 ---
 
-## 🖥 Tech stack
+## Export Options
+
+Students can export:
+
+- Python source code
+- Flowchart JSON files
+- PNG images of their diagrams
+
+This supports:
+- submission via VLE
+- sharing work
+- continuing work across sessions
+- assessment of both diagram and code
+
+---
+
+## Technology
+
+Think2Code is entirely client-side:
 
 - Vanilla JavaScript
-- Bootstrap 5
-- Skulpt (client-side Python)
 - HTML5 / CSS3 / SVG
-- html2canvas
+- Bootstrap 5
+- Skulpt (Python execution)
+- html2canvas (PNG export)
 
-No backend required — works offline.
-
----
-
-## 🧑‍🏫 Designed for classrooms
-
-think2code was built for teachers and learners:
-
-- supports direct instruction or discovery learning
-- challenges mode encourages independent practice
-- pseudocode bridges GCSE specs
-- visual execution helps SEN learners
-- Python alignment supports most UK curricula
+No server, no database, no login required.  
+It works offline once loaded.
 
 ---
 
-## 📦 Installation
+## Educational Design
 
-No build step required.
+Think2Code was built specifically for teaching:
 
-Just:
+- Flowcharts map directly to Python
+- Generated code is readable and inspectable
+- Execution highlights support weaker readers and SEN learners
+- Pseudocode links align with UK specifications
+- Teachers can demonstrate algorithms live
 
-1. Download repository
-2. Open `index.html` in a browser
+---
 
-or host via:
+## Installation
 
+There is no build step.
+
+To run locally:
+1. Download the repository
+2. Open `index.html` in a modern browser
+
+To deploy:
 - GitHub Pages
-- school VLE
+- school web hosting
+- VLE static hosting
 - local network share
-- simple static hosting
 
 ---
 
-## 🔮 Roadmap / ideas
+## Status
 
-Planned and possible features:
+Think2Code is actively developed and used in teaching contexts.
 
-- procedure / function blocks
-- tabbed multi-function programs
-- arrays visualization
-- runtime breakpoints
-- classroom teacher dashboard
-- marking / auto-assessment of challenges
+Feedback, bug reports, and classroom testing insights are very welcome.
 
 ---
 
-## 🙌 Contributing
+## License
 
-Pull requests and testing feedback are welcome — especially from:
-
-- teachers
-- examiners
-- trainee teachers
-- FE / HE lecturers
-- students using the tool
-
-Bug reports are very helpful too.
-
----
-
-## 📝 License
-
-MIT License. Free for schools, teachers and students.
-
----
-
-### ⭐ If you find think2code useful…
-
-Please star the repo — it helps others find it!
-
+MIT License — free to use, modify, and share.
