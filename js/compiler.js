@@ -83,6 +83,9 @@ class LoopClassifier {
                 validCycleHeaders.add(headerId);
             }
         }
+        
+        // Store cycleHeaders for later use in prioritization logic
+        const allCycleHeaders = cycleHeaders;
 
         // Optionally find headers using dominator analysis (for validation/comparison)
         let dominatorHeaders = new Set();
@@ -94,9 +97,44 @@ class LoopClassifier {
 
         // Use dominator-based headers if enabled and they found headers, otherwise use cycle-based
         // If dominator headers are empty, fall back to cycle headers
-        const allHeaders = (this.useDominatorHeaders && this.dominators && dominatorHeaders.size > 0) 
-            ? dominatorHeaders 
-            : validCycleHeaders;
+        let allHeaders = (this.useDominatorHeaders && this.dominators && dominatorHeaders.size > 0) 
+            ? new Set(dominatorHeaders) 
+            : new Set(validCycleHeaders);
+
+        // CRITICAL: If dominator-based detection found input/output nodes as headers,
+        // check if there are decision nodes in the same cycle that should take priority
+        // Decision nodes should always be preferred for while/for loops
+        if (this.useDominatorHeaders && this.dominators && dominatorHeaders.size > 0) {
+            const inputOutputHeaders = Array.from(dominatorHeaders).filter(h => {
+                const node = this.nodes.find(n => n.id === h);
+                return node && (node.type === 'input' || node.type === 'output');
+            });
+            
+            // For each input/output header, check if there's a decision node in the same cycle
+            for (const ioHeaderId of inputOutputHeaders) {
+                // Check if there's a decision node in validCycleHeaders that's in the same cycle
+                for (const candidateId of validCycleHeaders) {
+                    if (candidateId === ioHeaderId) continue;
+                    const candidateNode = this.nodes.find(n => n.id === candidateId);
+                    if (candidateNode && candidateNode.type === 'decision') {
+                        // Check if they're in the same cycle:
+                        // 1. Decision node has a back edge to input/output (most common case)
+                        // 2. Both are in cycleHeaders (detected as part of same cycle)
+                        const decisionOutgoing = this.outgoingMap.get(candidateId) || [];
+                        const hasBackEdgeToIO = decisionOutgoing.some(edge => edge.to === ioHeaderId);
+                        const bothInCycle = cycleHeaders.has(candidateId) && cycleHeaders.has(ioHeaderId);
+                        
+                        if (hasBackEdgeToIO || (allCycleHeaders.has(candidateId) && allCycleHeaders.has(ioHeaderId))) {
+                            // Decision node should take priority - add it to headers and remove input/output
+                            console.log(`Prioritizing decision node ${candidateId} over ${ioHeaderId} (input/output) in same cycle`);
+                            allHeaders.add(candidateId);
+                            allHeaders.delete(ioHeaderId);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
 
         // Allow all headers for classification (like old compiler)
         // Decision nodes can be while/for loops, non-decision nodes can be while-true loops
@@ -138,6 +176,40 @@ class LoopClassifier {
                         console.log(`Skipping ${headerId} - already part of loop ${existingHeaderId}'s body`);
                         skipHeader = true;
                         break;
+                    }
+                }
+            }
+            if (skipHeader) continue;
+            
+            // CRITICAL: If this is an input/output node, check if there's a decision node in the same cycle
+            // Decision nodes should take priority for while/for loops
+            // Only classify input/output nodes if there's no decision node in the same cycle that was successfully classified
+            if (headerNode.type === 'input' || headerNode.type === 'output') {
+                // Check if there's a decision node in the cycle headers that would be a better header
+                for (const otherHeaderId of sortedHeaders) {
+                    if (otherHeaderId === headerId) continue; // Skip self
+                    const otherHeaderNode = this.nodes.find(n => n.id === otherHeaderId);
+                    if (otherHeaderNode && otherHeaderNode.type === 'decision') {
+                        // Check if they're in the same cycle by checking reachability
+                        // If decision node can reach this input/output node, they're likely in the same cycle
+                        if (this.pathExists(otherHeaderId, headerId)) {
+                            // Check if the decision node was already classified
+                            if (this.loopPatterns.has(otherHeaderId)) {
+                                const decisionLoopInfo = this.loopPatterns.get(otherHeaderId);
+                                // If decision node was classified as for/while (not while-true), skip this input/output node
+                                if (decisionLoopInfo && (decisionLoopInfo.type === 'for' || decisionLoopInfo.type === 'while')) {
+                                    console.log(`Skipping ${headerId} (${headerNode.type}) - decision node ${otherHeaderId} in same cycle already classified as ${decisionLoopInfo.type}`);
+                                    skipHeader = true;
+                                    break;
+                                }
+                            } else {
+                                // Decision node comes before this in sorted order, so it will be classified first
+                                // Skip this input/output node to let the decision node be classified
+                                console.log(`Skipping ${headerId} (${headerNode.type}) - decision node ${otherHeaderId} in same cycle will be classified first`);
+                                skipHeader = true;
+                                break;
+                            }
+                        }
                     }
                 }
             }
