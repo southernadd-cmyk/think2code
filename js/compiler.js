@@ -4571,12 +4571,15 @@ class EnhancedIRBuilder extends IRBuilder {
         // Always insert highlight for increment node at the correct position in the loop body
         // The increment node is skipped during compilation, so we need to insert its highlight
         if (loopInfo.updateNodeId) {
+            let highlightInserted = false;
+            
             // Check if increment node is the direct successor of the loop header
             const headerYesBranch = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
             if (headerYesBranch === loopInfo.updateNodeId) {
                 // Increment node comes first (or is the loop entry) - insert highlight at the beginning
                 const highlightIR = new IRHighlight(loopInfo.updateNodeId);
                 bodyProgram.statements.unshift(highlightIR);
+                highlightInserted = true;
             } else if (loopEntry !== loopInfo.updateNodeId) {
                 // Check if increment node comes before loop entry in execution flow
                 const incrementNext = this.getSuccessor(loopInfo.updateNodeId, 'next');
@@ -4584,10 +4587,16 @@ class EnhancedIRBuilder extends IRBuilder {
                     // Increment node comes right before loop entry - insert highlight at the beginning
                     const highlightIR = new IRHighlight(loopInfo.updateNodeId);
                     bodyProgram.statements.unshift(highlightIR);
+                    highlightInserted = true;
                 }
             }
-            // If loopEntry === loopInfo.updateNodeId, the increment node is the loop entry
-            // and should be highlighted at the beginning (handled by the first condition above)
+            
+            // If increment node wasn't inserted at the beginning, insert it at the end
+            // This handles cases where the increment comes after the loop body (common in nested loops)
+            if (!highlightInserted) {
+                const highlightIR = new IRHighlight(loopInfo.updateNodeId);
+                bodyProgram.addStatement(highlightIR);
+            }
         }
         
         // Add pass statement if body is empty
