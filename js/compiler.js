@@ -101,36 +101,45 @@ class LoopClassifier {
             ? new Set(dominatorHeaders) 
             : new Set(validCycleHeaders);
 
-        // CRITICAL: If dominator-based detection found input/output nodes as headers,
+        // CRITICAL: If detection found input/output nodes as headers,
         // check if there are decision nodes in the same cycle that should take priority
         // Decision nodes should always be preferred for while/for loops
-        if (this.useDominatorHeaders && this.dominators && dominatorHeaders.size > 0) {
-            const inputOutputHeaders = Array.from(dominatorHeaders).filter(h => {
+        // This applies to both dominator-based and cycle-based headers
+        const headersToCheck = (this.useDominatorHeaders && this.dominators && dominatorHeaders.size > 0) 
+            ? dominatorHeaders 
+            : validCycleHeaders;
+            
+        if (headersToCheck.size > 0) {
+            const inputOutputHeaders = Array.from(headersToCheck).filter(h => {
                 const node = this.nodes.find(n => n.id === h);
                 return node && (node.type === 'input' || node.type === 'output');
             });
             
             // For each input/output header, check if there's a decision node in the same cycle
             for (const ioHeaderId of inputOutputHeaders) {
-                // Check if there's a decision node in validCycleHeaders that's in the same cycle
-                for (const candidateId of validCycleHeaders) {
-                    if (candidateId === ioHeaderId) continue;
-                    const candidateNode = this.nodes.find(n => n.id === candidateId);
-                    if (candidateNode && candidateNode.type === 'decision') {
-                        // Check if they're in the same cycle:
-                        // 1. Decision node has a back edge to input/output (most common case)
-                        // 2. Both are in cycleHeaders (detected as part of same cycle)
-                        const decisionOutgoing = this.outgoingMap.get(candidateId) || [];
-                        const hasBackEdgeToIO = decisionOutgoing.some(edge => edge.to === ioHeaderId);
-                        const bothInCycle = cycleHeaders.has(candidateId) && cycleHeaders.has(ioHeaderId);
-                        
-                        if (hasBackEdgeToIO || (allCycleHeaders.has(candidateId) && allCycleHeaders.has(ioHeaderId))) {
-                            // Decision node should take priority - add it to headers and remove input/output
-                            console.log(`Prioritizing decision node ${candidateId} over ${ioHeaderId} (input/output) in same cycle`);
-                            allHeaders.add(candidateId);
-                            allHeaders.delete(ioHeaderId);
-                            break;
-                        }
+                // Check all decision nodes, not just those in validCycleHeaders
+                // A decision node that has a back edge to the input/output header should be the header
+                for (const candidateNode of this.nodes) {
+                    if (candidateNode.id === ioHeaderId) continue;
+                    if (candidateNode.type !== 'decision') continue;
+                    
+                    const candidateId = candidateNode.id;
+                    // Check if decision node has a back edge to input/output (most common case)
+                    const decisionOutgoing = this.outgoingMap.get(candidateId) || [];
+                    const hasBackEdgeToIO = decisionOutgoing.some(edge => edge.to === ioHeaderId);
+                    
+                    // Also check if both are in the same cycle (both detected as cycle headers)
+                    const bothInCycle = cycleHeaders.has(candidateId) && cycleHeaders.has(ioHeaderId);
+                    
+                    // Check if decision node is reachable from input/output (they're in the same cycle)
+                    const isReachable = this.pathExists && this.pathExists(ioHeaderId, candidateId);
+                    
+                    if (hasBackEdgeToIO || bothInCycle || isReachable) {
+                        // Decision node should take priority - add it to headers and remove input/output
+                        console.log(`Prioritizing decision node ${candidateId} over ${ioHeaderId} (input/output) in same cycle`);
+                        allHeaders.add(candidateId);
+                        allHeaders.delete(ioHeaderId);
+                        break;
                     }
                 }
             }
