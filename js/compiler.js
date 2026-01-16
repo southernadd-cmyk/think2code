@@ -341,14 +341,9 @@ class LoopClassifier {
         for (const edge of outgoing) {
             if (recursionStack.has(edge.to)) {
                 // Found a back edge from nodeId to edge.to (which is in recursion stack)
-                // The CURRENT node (nodeId) is the one making the back edge
-                // If nodeId is a decision, process, var, output, or input node, IT could be the loop header
-                const currentNode = this.nodes.find(n => n.id === nodeId);
-                if (currentNode && (currentNode.type === 'decision' || currentNode.type === 'process' || currentNode.type === 'var' || currentNode.type === 'output' || currentNode.type === 'input')) {
-                    cycleHeaders.add(nodeId);
-                    console.log(`Cycle: ${currentNode.type} ${nodeId} has back edge to ${edge.to}`);
-                }
-
+                // The loop header is the TARGET of the back edge (edge.to), not the source (nodeId)
+                // The source node (nodeId) is inside the loop body, not the header
+                
                 // Find the decision, process, var, output, or input node on the path to the back edge target
                 const targetNode = this.nodes.find(n => n.id === edge.to);
                 if (targetNode && (targetNode.type === 'decision' || targetNode.type === 'process' || targetNode.type === 'var' || targetNode.type === 'output' || targetNode.type === 'input')) {
@@ -4824,9 +4819,20 @@ class EnhancedIRBuilder extends IRBuilder {
             const firstExit = loopInfo.exitNodes[0];
             const exitNode = this.findNode(firstExit);
             
-            // If there's a break in the body, use while-else
+            // Check if any break paths lead to the same node as the exit node
+            // If so, don't use while-else - place code after the loop instead
+            let breakTargetsMatchExit = false;
+            if (hasBreakInBody && exitNode) {
+                const breakTargets = this.getBreakTargetNodes(loopInfo.bodyNodes, nodeId);
+                breakTargetsMatchExit = breakTargets.has(firstExit);
+                if (breakTargetsMatchExit) {
+                    console.log(`  Break target(s) match exit node ${firstExit}, placing code after loop instead of while-else`);
+                }
+            }
+            
+            // If there's a break in the body AND break targets don't match exit, use while-else
             // The else branch runs only when the loop completes normally (no break)
-            if (hasBreakInBody && exitNode && exitNode.type !== 'end') {
+            if (hasBreakInBody && exitNode && exitNode.type !== 'end' && !breakTargetsMatchExit) {
                 console.log(`  Using while-else, elseBranch starts at ${firstExit}`);
                 // Build else branch
                 const elseBranch = this.buildNode(firstExit, new Set(), parentAllowedIds);
@@ -4894,6 +4900,51 @@ class EnhancedIRBuilder extends IRBuilder {
             }
         }
         return false;
+    }
+    
+    /**
+     * Get all nodes that break paths lead to (nodes immediately after break statements)
+     * Returns a Set of node IDs that are targets of break paths
+     * A break path is a branch from a decision node in the loop body that exits the loop
+     */
+    getBreakTargetNodes(bodyNodes, headerId) {
+        const breakTargets = new Set();
+        const bodyNodeSet = new Set(bodyNodes);
+        
+        for (const nodeId of bodyNodes) {
+            const node = this.findNode(nodeId);
+            if (!node) continue;
+            
+            // Only check decision nodes - they're the only ones that can have explicit break paths
+            if (node.type !== 'decision') continue;
+            
+            const yesId = this.getSuccessor(nodeId, 'yes') || this.getSuccessor(nodeId, 'true');
+            const noId = this.getSuccessor(nodeId, 'no') || this.getSuccessor(nodeId, 'false');
+            
+            // Check if either branch exits the loop (doesn't loop back to header and reaches END or is outside body)
+            if (yesId && yesId !== headerId) {
+                // Check if this branch eventually reaches END (break path)
+                if (this.reachesEndDirectly(yesId, headerId)) {
+                    // The immediate target of the break path
+                    // If it's outside the loop body, it's a break target
+                    if (!bodyNodeSet.has(yesId)) {
+                        breakTargets.add(yesId);
+                    }
+                }
+            }
+            if (noId && noId !== headerId) {
+                // Check if this branch eventually reaches END (break path)
+                if (this.reachesEndDirectly(noId, headerId)) {
+                    // The immediate target of the break path
+                    // If it's outside the loop body, it's a break target
+                    if (!bodyNodeSet.has(noId)) {
+                        breakTargets.add(noId);
+                    }
+                }
+            }
+        }
+        
+        return breakTargets;
     }
     
     /**
