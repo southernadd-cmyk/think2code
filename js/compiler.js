@@ -2757,7 +2757,7 @@ class IRBuilder {
         const promptLit = JSON.stringify(prompt); // safe quoting
         let rhs = prompt.length ? `input(${promptLit})` : `input()`;
 
-        if (dtype === "int") rhs = `int(${rhs})`;
+        if (dtype === "int") rhs = `int(float(${rhs}))`;
         else if (dtype === "float") rhs = `float(${rhs})`;
         // else: string/no cast
 
@@ -5759,7 +5759,7 @@ const shouldAddToQueue = (nodeId, stopAfterFlag = false) => {
 
         const inputCall = promptExpr ? `input(${promptExpr})` : 'input()';
 
-        if (dtype === 'int') return `${varName} = int(${inputCall})`;
+        if (dtype === 'int') return `${varName} = int(float(${inputCall}))`;
         return `${varName} = ${inputCall}`;
     }
 
@@ -7205,7 +7205,7 @@ class FlowchartCompiler {
             const dtype = (node.dtype || "").toLowerCase().trim();
 
             let rhs = prompt.length ? `input(${q(prompt)})` : `input()`;
-            if (dtype === "int") rhs = `int(${rhs})`;
+            if (dtype === "int") rhs = `int(float(${rhs}))`;
             else if (dtype === "float") rhs = `float(${rhs})`;
 
             return `${varName} = ${rhs}`;
@@ -8050,11 +8050,11 @@ class FlowchartCompiler {
                 break;
 
             case "input": {
-                const wrap = node.dtype === "int" ? "int(input(" : "input(";
+                const wrap = node.dtype === "int" ? "int(float(input(" : "input(";
                 const varName = node.varName || "x";
                 const prompt = node.prompt || '""';
                 code += `${indent}${varName} = ${wrap}${prompt})\n`;
-                if (node.dtype === "int") code = code.trimEnd() + ")\n";
+                if (node.dtype === "int") code = code.trimEnd() + ")))\n";
                 break;
             }
 
@@ -8209,11 +8209,11 @@ class FlowchartCompiler {
                 break;
 
             case "input": {
-                const wrap = node.dtype === "int" ? "int(input(" : "input(";
+                const wrap = node.dtype === "int" ? "int(float(input(" : "input(";
                 const varName = node.varName || "x";
                 const prompt = node.prompt || '""';
                 code += `${indent}${varName} = ${wrap}${prompt})\n`;
-                if (node.dtype === "int") code = code.trimEnd() + ")\n";
+                if (node.dtype === "int") code = code.trimEnd() + ")))\n";
                 break;
             }
 
@@ -9081,11 +9081,11 @@ class FlowchartCompiler {
                 code += `${indent}print(${node.text})\n`;
                 break;
             case "input": {
-                const wrap = node.dtype === "int" ? "int(input(" : "input(";
+                const wrap = node.dtype === "int" ? "int(float(input(" : "input(";
                 const varName = node.varName || "x";
                 const prompt = node.prompt || '""';
                 code += `${indent}${varName} = ${wrap}${prompt})\n`;
-                if (node.dtype === "int") code = code.trimEnd() + ")\n";
+                if (node.dtype === "int") code = code.trimEnd() + ")))\n";
                 break;
             }
             case "decision":

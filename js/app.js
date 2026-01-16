@@ -2280,7 +2280,7 @@ node.prompt = node.prompt || node.text || "";
 
                 document.getElementById("input-preview").innerText =
                     t === "int"
-                        ? `${v} = int(input(${p}))`
+                        ? `${v} = int(float(input(${p})))`
                         : `${v} = input(${p})`;
             };
 
